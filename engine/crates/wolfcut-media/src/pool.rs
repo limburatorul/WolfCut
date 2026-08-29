@@ -278,6 +278,9 @@ pub struct ReaderPool {
     max_readers: usize,
     /// Recency order for reader eviction, oldest first.
     reader_order: Vec<(PathBuf, u32, u32, Option<String>)>,
+    /// Where stand-ins live and how tall they are, when previews are being
+    /// served from them. None means originals only.
+    proxies: Option<(PathBuf, u32)>,
 }
 
 impl ReaderPool {
@@ -290,7 +293,30 @@ impl ReaderPool {
             facts: HashMap::new(),
             max_readers: max_readers.max(1),
             reader_order: Vec::new(),
+            proxies: None,
         }
+    }
+
+    /// Serve frames from stand-ins in `directory` wherever one has been built.
+    ///
+    /// This pool is the preview path and only the preview path - the exporter
+    /// opens its own decoders on the originals - so this is the whole of the
+    /// substitution, and a proxy has no route into a finished file. Passing
+    /// None goes back to originals.
+    pub fn use_proxies(&mut self, directory: Option<PathBuf>, height: u32) {
+        self.proxies = directory.map(|directory| (directory, height));
+    }
+
+    /// The stand-in for `original`, if one has been built.
+    ///
+    /// A filesystem check per request rather than a remembered answer: a proxy
+    /// that finishes while its clip is on screen should be picked up on the
+    /// next frame instead of after a restart. It costs microseconds against a
+    /// decode measured in tens of milliseconds.
+    fn proxy_for(&self, original: &Path) -> Option<PathBuf> {
+        let (directory, height) = self.proxies.as_ref()?;
+        let candidate = crate::proxy::path_in(directory, original, *height);
+        candidate.is_file().then_some(candidate)
     }
 
     /// 512 MB of frames, eight warm readers - enough for a busy timeline.
@@ -313,6 +339,14 @@ impl ReaderPool {
         still: bool,
         chain: Option<&str>,
     ) -> Result<Arc<Frame>> {
+        // Resolved here and nowhere else. Everything below - the probed facts,
+        // the cache key, the warm reader - is keyed by whatever this settles
+        // on, so a proxy appearing mid-session costs one cache miss and then
+        // serves from the small file. Frames are addressed by time and the
+        // proxy keeps the source's rate, so the two are interchangeable.
+        let stood_in = self.proxy_for(path);
+        let path = stood_in.as_deref().unwrap_or(path);
+
         let facts = self.facts_for(path, still)?;
         let rate = facts.rate;
         let mut target = if facts.still { 0 } else { rate.frame_at(time).max(0) };

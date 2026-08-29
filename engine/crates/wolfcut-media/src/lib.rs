@@ -19,6 +19,7 @@ pub mod error;
 pub mod peaks;
 pub mod pool;
 pub mod probe;
+pub mod proxy;
 pub mod silence;
 
 mod process;
