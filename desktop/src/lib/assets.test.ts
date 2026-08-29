@@ -14,7 +14,13 @@
  */
 import { describe, expect, test } from "vitest";
 
-import { decodePeaks, encodePeaks, type Peaks } from "./assets";
+import {
+  createAssets,
+  decodePeaks,
+  encodePeaks,
+  releaseAssets,
+  type Peaks,
+} from "./assets";
 
 function peaks(min: number[], max: number[], bucketsPerSecond = 200): Peaks {
   return {
@@ -129,5 +135,82 @@ describe("decodePeaks fails soft on bad files", () => {
       new DataView(bytes.buffer).setFloat32(0, rate, true);
       expect(decodePeaks(bytes.buffer)).toBeNull();
     }
+  });
+});
+
+/**
+ * Eviction. The caches outlive the media they describe unless something
+ * sweeps them, and a strip is an ImageBitmap holding GPU memory the collector
+ * does not account for: forgetting the map entry is not the same as freeing
+ * the pixels, so these tests watch close() and not just Map.has().
+ */
+type FakeBitmap = ImageBitmap & { closed: boolean };
+
+function bitmap(): FakeBitmap {
+  const fake = {
+    closed: false,
+    close() {
+      fake.closed = true;
+    },
+  };
+  return fake as unknown as FakeBitmap;
+}
+
+describe("releasing artwork for media the project dropped", () => {
+  test("evicts all three caches for a departed id and frees its bitmap", () => {
+    const assets = createAssets();
+    const gone = bitmap();
+    const kept = bitmap();
+    for (const [id, strip] of [["gone", gone], ["kept", kept]] as const) {
+      assets.strips.set(id, strip);
+      assets.stripFrames.set(id, 24);
+      assets.peaks.set(id, peaks([0], [0]));
+    }
+
+    releaseAssets(assets, new Set(["kept"]));
+
+    expect(assets.strips.has("gone")).toBe(false);
+    expect(assets.stripFrames.has("gone")).toBe(false);
+    expect(assets.peaks.has("gone")).toBe(false);
+    // The point of the whole exercise: dropping the entry alone would leave
+    // the pixels alive until the collector felt like it.
+    expect(gone.closed).toBe(true);
+
+    expect(assets.strips.has("kept")).toBe(true);
+    expect(assets.stripFrames.has("kept")).toBe(true);
+    expect(assets.peaks.has("kept")).toBe(true);
+    expect(kept.closed).toBe(false);
+  });
+
+  test("sweeps a run of doomed entries without skipping any", () => {
+    // The sweep deletes from the Map it is iterating. That is defined
+    // behaviour, but it is the kind of thing a refactor breaks quietly, and
+    // the symptom would be every other filmstrip surviving forever.
+    const assets = createAssets();
+    const strips = ["a", "b", "c", "d"].map((id) => {
+      const strip = bitmap();
+      assets.strips.set(id, strip);
+      assets.stripFrames.set(id, 24);
+      return strip;
+    });
+
+    releaseAssets(assets, new Set());
+
+    expect(assets.strips.size).toBe(0);
+    expect(assets.stripFrames.size).toBe(0);
+    expect(strips.every((strip) => strip.closed)).toBe(true);
+  });
+
+  test("keeps everything when every id is still live", () => {
+    const assets = createAssets();
+    const strip = bitmap();
+    assets.strips.set("one", strip);
+    assets.peaks.set("two", peaks([0], [0]));
+
+    releaseAssets(assets, new Set(["one", "two"]));
+
+    expect(assets.strips.size).toBe(1);
+    expect(assets.peaks.size).toBe(1);
+    expect(strip.closed).toBe(false);
   });
 });

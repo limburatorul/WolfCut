@@ -107,6 +107,11 @@ export function useEngineSession({
     [onCommandError],
   );
 
+  // Undo and redo report their failures like any other command. Running out
+  // of history is not one of them - the engine returns state for that, not an
+  // error - so what surfaces here is a session that is gone or a lock that is
+  // poisoned, both of which the user needs told rather than discovering
+  // through a button that quietly does nothing.
   const undoAction = useCallback(() => {
     queue.current = queue.current
       .then(async () => {
@@ -115,8 +120,8 @@ export function useEngineSession({
         setView(next);
         setEcho(null);
       })
-      .catch(() => undefined);
-  }, []);
+      .catch((cause: unknown) => onCommandError(String(cause)));
+  }, [onCommandError]);
 
   const redoAction = useCallback(() => {
     queue.current = queue.current
@@ -126,8 +131,8 @@ export function useEngineSession({
         setView(next);
         setEcho(null);
       })
-      .catch(() => undefined);
-  }, []);
+      .catch((cause: unknown) => onCommandError(String(cause)));
+  }, [onCommandError]);
 
   // ── the gesture echo ─────────────────────────────────────────────────────
 

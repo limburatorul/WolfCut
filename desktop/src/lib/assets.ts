@@ -170,6 +170,31 @@ export function requestVideoPeaks(
 }
 
 /**
+ * Drops artwork for media the project no longer holds.
+ *
+ * The caches are keyed by media id and nothing ever removed from them, so a
+ * long session that imports and deletes its way through a shoot kept every
+ * filmstrip it had ever decoded. Strips are `ImageBitmap`s, whose pixels live
+ * on the GPU, where the garbage collector neither measures them nor hurries
+ * to release them - `close()` is the only thing that hands that memory back,
+ * and it has to happen before the last reference goes.
+ *
+ * Driven by the ids the project still lists rather than by a size budget, so
+ * artwork disappears exactly when the media it describes does.
+ */
+export function releaseAssets(assets: MediaAssets, liveIds: Set<string>): void {
+  for (const [id, strip] of assets.strips) {
+    if (liveIds.has(id)) continue;
+    strip.close();
+    assets.strips.delete(id);
+    assets.stripFrames.delete(id);
+  }
+  for (const id of assets.peaks.keys()) {
+    if (!liveIds.has(id)) assets.peaks.delete(id);
+  }
+}
+
+/**
  * The on-disk artwork cache, kept in the project's folder.
  *
  * Strips and peaks survive a relaunch there, which is the difference between

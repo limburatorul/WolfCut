@@ -29,7 +29,7 @@ import { StartScreen, type ProjectSession } from "./components/StartScreen";
 import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
 import { TimelinePanel, resolveDrop, type Tool } from "./components/TimelinePanel";
-import { createAssets, requestAssets, requestVideoPeaks } from "./lib/assets";
+import { createAssets, releaseAssets, requestAssets, requestVideoPeaks } from "./lib/assets";
 import {
   activeTimeline,
   clipsAt,
@@ -405,6 +405,10 @@ function Editor({
         requestVideoPeaks(assets.current, item, session.path);
       }
     }
+    // Removing media from the bin has to release its artwork too, or a long
+    // session's GPU-side filmstrips pile up for the whole run. This pass
+    // already knows the surviving ids, so the sweep rides along with it.
+    releaseAssets(assets.current, new Set(project.media.map((item) => item.id)));
   }, [loaded, project.media, timeline.clips, session.path]);
 
   // Files dropped from the OS.

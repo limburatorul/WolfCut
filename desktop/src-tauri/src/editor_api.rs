@@ -261,9 +261,17 @@ pub async fn editor_save(
 }
 
 /// Closes the session, dropping its undo history.
+///
+/// A poisoned lock is closed anyway. Skipping it left the dead session
+/// installed, and since every other entry point turns poison into an error,
+/// the app then refused to open *any* project - one panic in one command
+/// bricked the editor until it was restarted. Nothing here needs the state to
+/// be consistent: it is being dropped. Clearing the poison afterwards is what
+/// lets the next `editor_open` install a healthy session.
 #[tauri::command]
 pub fn editor_close(state: tauri::State<'_, EditorState>) {
-    if let Ok(mut guard) = state.0.lock() {
-        *guard = None;
-    }
+    let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = None;
+    drop(guard);
+    state.0.clear_poison();
 }
