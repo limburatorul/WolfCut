@@ -43,7 +43,36 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, TryLockError};
+
+/// One poison policy for every lock in this file.
+///
+/// `.lock_or_recover()` cascades. Four kinds of thread share this state - the
+/// mix callback, the transport, the decode workers, the cache sweep - so one
+/// worker dying on a bad file poisoned the mutex and every later lock panicked
+/// in turn, which is how a single unreadable clip silenced playback for the
+/// rest of the session.
+///
+/// Recovering is right here specifically because of what is behind these
+/// locks: a frame cache, a set of in-flight keys, the clip list the transport
+/// overwrites wholesale - all rebuildable, none of them the document. A panic
+/// cannot leave a std collection structurally unsound, only logically
+/// half-updated, and every one of these is re-derived from the timeline on the
+/// next edit.
+///
+/// The document's own lock does not use this. `editor_api` still refuses on
+/// poison, because an interrupted edit is not something to carry on from.
+trait LockOrRecover<T> {
+    /// The guard, taking the data back from a poisoned lock rather than
+    /// panicking on it.
+    fn lock_or_recover(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    fn lock_or_recover(&self) -> MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
 
 use serde::Deserialize;
 use tauri::Emitter;
@@ -347,18 +376,18 @@ impl Playback {
     /// decode queue and joins the mix when it lands. `project` is the
     /// project folder, whose cache holds the PCM files.
     pub fn set_clips(self: &Arc<Self>, project: PathBuf, specs: Vec<ClipSpec>) {
-        *self.specs.lock().unwrap() = specs.clone();
-        *self.project.lock().unwrap() = Some(project.clone());
+        *self.specs.lock_or_recover() = specs.clone();
+        *self.project.lock_or_recover() = Some(project.clone());
 
         for spec in specs {
             let key = decode_key(&spec);
-            if self.cache.lock().unwrap().contains_key(&key) {
+            if self.cache.lock_or_recover().contains_key(&key) {
                 continue;
             }
-            if !self.decoding.lock().unwrap().insert(key.clone()) {
+            if !self.decoding.lock_or_recover().insert(key.clone()) {
                 continue;
             }
-            let mut jobs = self.queue.jobs.lock().unwrap();
+            let mut jobs = self.queue.jobs.lock_or_recover();
             jobs.push_back(DecodeJob { spec, project: project.clone(), key });
             self.queue.available.notify_one();
         }
@@ -371,9 +400,9 @@ impl Playback {
     /// Sends the mix callback everything currently wanted *and* decoded, and
     /// remembers the set so a rebuilt stream can be seeded with it.
     fn resync(&self) {
-        let specs = self.specs.lock().unwrap();
+        let specs = self.specs.lock_or_recover();
         let now = self.tick.fetch_add(1, Ordering::Relaxed) + 1;
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock_or_recover();
         let active: Vec<ActiveClip> = specs
             .iter()
             .filter_map(|spec| {
@@ -390,7 +419,7 @@ impl Playback {
             })
             .collect();
         drop(cache);
-        *self.last_active.lock().unwrap() = active.clone();
+        *self.last_active.lock_or_recover() = active.clone();
         let _ = self.tx.send(Msg::SetClips(active));
     }
 
@@ -400,8 +429,8 @@ impl Playback {
     /// mapping per edit of every trimmed span, and those add up.
     fn evict_memory(&self) {
         let live: HashSet<String> =
-            self.specs.lock().unwrap().iter().map(decode_key).collect();
-        let mut cache = self.cache.lock().unwrap();
+            self.specs.lock_or_recover().iter().map(decode_key).collect();
+        let mut cache = self.cache.lock_or_recover();
         while cache.len() > MEMORY_CACHE_CAP {
             let doomed = cache
                 .iter()
@@ -430,7 +459,7 @@ impl Playback {
             .name("audio-cache-sweep".into())
             .spawn(move || {
                 let live: HashSet<String> =
-                    this.specs.lock().unwrap().iter().map(decode_key).collect();
+                    this.specs.lock_or_recover().iter().map(decode_key).collect();
                 let directory = project.join("cache").join("audio");
                 if let Some(doomed) = sweep_plan(&directory, &live, DISK_CACHE_BUDGET) {
                     for path in doomed {
@@ -448,12 +477,20 @@ impl Playback {
 fn decode_worker(playback: &Arc<Playback>) {
     loop {
         let job = {
-            let mut jobs = playback.queue.jobs.lock().unwrap();
+            let mut jobs = playback.queue.jobs.lock_or_recover();
             loop {
                 // Newest first: pop from the back where set_clips pushes.
                 match jobs.pop_back() {
                     Some(job) => break job,
-                    None => jobs = playback.queue.available.wait(jobs).unwrap(),
+                    // Same policy: a worker that died holding the queue
+                    // must not take the ones still waiting on it with it.
+                    None => {
+                        jobs = playback
+                            .queue
+                            .available
+                            .wait(jobs)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    }
                 }
             }
         };
@@ -462,19 +499,18 @@ fn decode_worker(playback: &Arc<Playback>) {
         // weight; skip it before paying for FFmpeg.
         let wanted = playback
             .specs
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .iter()
             .any(|spec| decode_key(spec) == job.key);
         if !wanted {
-            playback.decoding.lock().unwrap().remove(&job.key);
+            playback.decoding.lock_or_recover().remove(&job.key);
             continue;
         }
 
         match decode(&job.spec, &job.project, &job.key) {
             Ok(pcm) => {
                 let now = playback.tick.fetch_add(1, Ordering::Relaxed) + 1;
-                playback.cache.lock().unwrap().insert(
+                playback.cache.lock_or_recover().insert(
                     job.key.clone(),
                     CacheEntry { pcm: Arc::new(pcm), last_used: now },
                 );
@@ -484,7 +520,7 @@ fn decode_worker(playback: &Arc<Playback>) {
                 format!("audio decode failed for {}: {error}", job.spec.path),
             ),
         }
-        playback.decoding.lock().unwrap().remove(&job.key);
+        playback.decoding.lock_or_recover().remove(&job.key);
         playback.resync();
     }
 }
@@ -759,7 +795,7 @@ where
 
     // Seed from the world as it is, not from zero: a stream rebuilt mid-
     // playback resumes the same clips at the shared clock's position.
-    let mut clips: Vec<ActiveClip> = last_active.lock().unwrap().clone();
+    let mut clips: Vec<ActiveClip> = last_active.lock_or_recover().clone();
     let mut playing = shared.playing.load(Ordering::Relaxed);
     let mut position = shared.position_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0;
 
@@ -774,8 +810,16 @@ where
                 let mut sought = false;
                 // try_lock, not lock: the audio callback must never block.
                 // Contention only exists while the supervisor swaps streams,
-                // and then this callback is on its way out anyway.
-                if let Ok(receiver) = rx.try_lock() {
+                // and then this callback is on its way out anyway. A poisoned
+                // lock still yields its receiver, or a panic anywhere else
+                // would leave this callback deaf to play, pause and seek for
+                // as long as the stream lived.
+                let inbox = match rx.try_lock() {
+                    Ok(receiver) => Some(receiver),
+                    Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                    Err(TryLockError::WouldBlock) => None,
+                };
+                if let Some(receiver) = inbox {
                     while let Ok(message) = receiver.try_recv() {
                         match message {
                             Msg::SetClips(next) => clips = next,
