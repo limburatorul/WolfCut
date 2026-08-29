@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import {
@@ -8,36 +8,49 @@ import {
   deleteTtsModel,
   downloadTranscriberModel,
   downloadTtsModel,
+  clearProxies,
   engineVersion,
+  onProxyProgress,
   onTranscriberDownload,
   onTtsDownload,
+  proxyConfigure,
+  proxyUsage,
   setTranscriberBinary,
   transcriberStatus,
   ttsStatus,
+  type ProxyProgress,
   type TranscriberStatus,
   type TtsStatus,
 } from "../lib/engine";
 import { LOCALES, systemLocale, useLocale, type MsgKey } from "../lib/i18n";
 import {
+  getProxyDirectory,
+  getProxyEnabled,
+  getProxyHeight,
   getTranscriberLanguage,
   getTranscriberModel,
   getTtsModel,
+  PROXY_HEIGHTS,
+  setProxyDirectory,
+  setProxyEnabled,
+  setProxyHeight,
   setTranscriberLanguage,
   setTranscriberModel,
   setTtsModel,
 } from "../lib/settings";
-import { HelpTip } from "./controls";
+import { HelpTip, Toggle } from "./controls";
 import { Icon } from "./Icon";
 
 /** The pages of the settings dialog, in display order. */
-type SettingsTab = "general" | "transcriber" | "speech" | "about";
+type SettingsTab = "general" | "performance" | "transcriber" | "speech" | "about";
 
 const TABS: {
   id: SettingsTab;
   labelKey: MsgKey;
-  icon: "settings" | "waveform" | "volume" | "info";
+  icon: "settings" | "film" | "waveform" | "volume" | "info";
 }[] = [
   { id: "general", labelKey: "settings.tabs.general", icon: "settings" },
+  { id: "performance", labelKey: "settings.tabs.performance", icon: "film" },
   { id: "transcriber", labelKey: "settings.tabs.transcriber", icon: "waveform" },
   { id: "speech", labelKey: "settings.tabs.speech", icon: "volume" },
   { id: "about", labelKey: "settings.tabs.about", icon: "info" },
@@ -99,6 +112,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
           <div className="thin-scroll min-w-0 flex-1 overflow-y-auto px-5 py-4">
             {tab === "general" && <GeneralSettings />}
+            {tab === "performance" && <PerformanceSettings />}
             {tab === "transcriber" && <TranscriberSettings />}
             {tab === "speech" && <SpeechSettings />}
             {tab === "about" && <AboutSettings />}
@@ -156,6 +170,194 @@ function GeneralSettings() {
         </div>
         <p className="mt-2 text-[11px] leading-snug text-tertiary">
           {t("settings.general.engineNote")}
+        </p>
+      </section>
+    </div>
+  );
+}
+
+/**
+ * Proxy media: the stand-ins the monitor scrubs through.
+ *
+ * The folder is asked for rather than defaulted. Proxies are large and they
+ * are the user's files to find, move and empty; putting gigabytes somewhere
+ * unasked is how an application ends up holding disk nobody can locate. That
+ * is also why enabling without a folder is not a state this panel can reach -
+ * choosing one is what turns the feature on.
+ */
+function PerformanceSettings() {
+  const { t } = useLocale();
+  const [directory, setDirectory] = useState(getProxyDirectory);
+  const [height, setHeight] = useState(getProxyHeight);
+  const [enabled, setEnabled] = useState(getProxyEnabled);
+  const [usage, setUsage] = useState<number | null>(null);
+  const [progress, setProgress] = useState<ProxyProgress | null>(null);
+  const [clearing, setClearing] = useState(false);
+
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    void onProxyProgress(setProgress).then((off) => {
+      stop = off;
+    });
+    return () => stop?.();
+  }, []);
+
+  // How much disk this is costing, refreshed as builds land - the number that
+  // decides whether someone wants the feature at all.
+  const built = progress?.built ?? 0;
+  useEffect(() => {
+    if (!directory) {
+      setUsage(null);
+      return;
+    }
+    void proxyUsage(directory)
+      .then(setUsage)
+      .catch(() => setUsage(null));
+  }, [directory, built, clearing]);
+
+  /** The host learns the folder from here and nowhere else. */
+  const apply = useCallback((folder: string | null, size: number, on: boolean) => {
+    void proxyConfigure(on && folder ? folder : null, size).catch(() => undefined);
+  }, []);
+
+  const choose = async () => {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: t("settings.performance.chooseFolder"),
+    });
+    if (typeof picked !== "string") return;
+    setProxyDirectory(picked);
+    setDirectory(picked);
+    // Choosing a folder is the act of turning this on; asking twice would be
+    // a second click for a decision already made.
+    setProxyEnabled(true);
+    setEnabled(true);
+    apply(picked, height, true);
+  };
+
+  const toggle = (on: boolean) => {
+    setProxyEnabled(on);
+    setEnabled(on);
+    apply(directory, height, on);
+  };
+
+  const resize = (size: number) => {
+    setProxyHeight(size);
+    setHeight(size);
+    // A different size is a different set of files; the old ones stay on disk
+    // until they are cleared, and the Clear button says how much that is.
+    apply(directory, size, enabled);
+  };
+
+  const clear = async () => {
+    if (!directory) return;
+    setClearing(true);
+    await clearProxies(directory).catch(() => 0);
+    setClearing(false);
+  };
+
+  const working = (progress?.queued ?? 0) + (progress?.building ?? 0);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <section>
+        <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+          {t("settings.performance.proxies")}
+          <HelpTip align="start" text={t("settings.performance.proxiesHelp")} />
+        </h3>
+
+        <div className="mb-3 flex items-center gap-2 rounded-lg bg-sunken px-3 py-2.5">
+          <Icon name="folder" size={14} className="shrink-0 text-tertiary" />
+          <span
+            className="min-w-0 flex-1 truncate text-xs text-secondary"
+            title={directory ?? undefined}
+          >
+            {directory ?? t("settings.performance.noFolder")}
+          </span>
+          <button
+            type="button"
+            onClick={() => void choose()}
+            className="shrink-0 cursor-pointer rounded-md bg-panel px-2.5 py-1 text-[11px]
+                       text-primary ring-1 ring-hairline transition-colors hover:bg-hover"
+          >
+            {directory ? t("settings.performance.change") : t("settings.performance.choose")}
+          </button>
+        </div>
+
+        <Toggle
+          label={t("settings.performance.buildAutomatically")}
+          hint={t("settings.performance.buildAutomaticallyHint")}
+          checked={enabled}
+          onChange={(on) => directory && toggle(on)}
+        />
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+          {t("settings.performance.size")}
+        </h3>
+        <div className="flex w-72 flex-col gap-1.5">
+          {PROXY_HEIGHTS.map((size) => {
+            const selected = height === size;
+            return (
+              <button
+                key={size}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                onClick={() => resize(size)}
+                className={`flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left
+                            ring-1 transition-shadow ${
+                              selected ? "ring-accent" : "ring-hairline hover:ring-hairline-strong"
+                            }`}
+              >
+                <span
+                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full
+                             ring-1 ring-hairline-strong"
+                >
+                  {selected && <span className="h-2 w-2 rounded-full bg-accent" />}
+                </span>
+                <span className="truncate text-xs text-primary">
+                  {t("settings.performance.sizeOption", { height: String(size) })}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-2 text-[11px] leading-snug text-tertiary">
+          {t("settings.performance.sizeNote")}
+        </p>
+      </section>
+
+      <section>
+        <div className="flex items-center gap-2 rounded-lg bg-sunken px-3 py-2.5">
+          <span className="min-w-0 flex-1 truncate text-xs text-secondary">
+            {working > 0
+              ? t("settings.performance.building", { count: String(working) })
+              : usage === null
+                ? t("settings.performance.noneYet")
+                : t("settings.performance.using", { size: formatSize(usage) })}
+            {progress && progress.failed > 0 && (
+              <span className="text-danger">
+                {" "}
+                {t("settings.performance.failed", { count: String(progress.failed) })}
+              </span>
+            )}
+          </span>
+          <button
+            type="button"
+            disabled={!directory || clearing || !usage}
+            onClick={() => void clear()}
+            className="shrink-0 cursor-pointer rounded-md bg-panel px-2.5 py-1 text-[11px]
+                       text-primary ring-1 ring-hairline transition-colors hover:bg-hover
+                       disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {t("settings.performance.clear")}
+          </button>
+        </div>
+        <p className="mt-2 text-[11px] leading-snug text-tertiary">
+          {t("settings.performance.exportNote")}
         </p>
       </section>
     </div>

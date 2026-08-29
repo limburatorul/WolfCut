@@ -53,6 +53,8 @@ import {
   detectSilence,
   editorSave,
   engineVersion,
+  ensureProxy,
+  proxyConfigure,
   newMediaFromSummary,
   probeMedia,
   readMediaBytes,
@@ -62,6 +64,7 @@ import {
 import { findTransition } from "./lib/effects";
 import { familyForPath, registerFont } from "./lib/text";
 import { useLocale } from "./lib/i18n";
+import { getProxyDirectory, getProxyEnabled, getProxyHeight } from "./lib/settings";
 import { useCaptions } from "./hooks/useCaptions";
 import { useEngineSession } from "./hooks/useEngineSession";
 import { useEngineTruth } from "./hooks/useEngineTruth";
@@ -303,6 +306,19 @@ function Editor({
   // from inside its draw loop, so artwork arriving needs no re-render.
   const assets = useRef(createAssets());
 
+  // Media already asked about, so the pass below - which runs on every edit -
+  // does not send an IPC round trip per clip per keystroke. Asking once a
+  // session is enough: a proxy that lands is picked up by the preview itself.
+  const proxied = useRef(new Set<string>());
+
+  // The preview reads stand-ins from the folder the settings remember. Set
+  // once per session here, and again by the settings sheet whenever it
+  // changes, so a saved choice survives a restart.
+  useEffect(() => {
+    const directory = getProxyEnabled() ? getProxyDirectory() : null;
+    void proxyConfigure(directory, getProxyHeight()).catch(() => undefined);
+  }, []);
+
   // ── clip edits (echo + commit) ───────────────────────────────────────────
 
   /** Live patch from a panel control; committed by its onCommit. */
@@ -407,10 +423,22 @@ function Editor({
     const wantsPeaks = new Set(
       timeline.clips.filter((clip) => clip.kind === "audio").map((clip) => clip.mediaId),
     );
+    const proxyFolder = getProxyEnabled() ? getProxyDirectory() : null;
+    const proxyHeight = getProxyHeight();
     for (const item of project.media) {
       requestAssets(assets.current, item, session.path);
       if (item.kind === "video" && wantsPeaks.has(item.id)) {
         requestVideoPeaks(assets.current, item, session.path);
+      }
+      // A stand-in for anything tall enough to be worth one. Fire and forget:
+      // the engine substitutes it the moment it lands, so nothing here waits
+      // and the clip previews from its original until then.
+      if (proxyFolder && item.kind === "video" && item.height && !proxied.current.has(item.id)) {
+        proxied.current.add(item.id);
+        void ensureProxy(item.path, proxyFolder, proxyHeight, item.height).catch(() => {
+          // A failed ask is not worth a toast: the editor works, only slower.
+          proxied.current.delete(item.id);
+        });
       }
     }
     // Removing media from the bin has to release its artwork too, or a long

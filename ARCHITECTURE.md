@@ -136,6 +136,47 @@ flowchart TB
 
 ---
 
+### 3.1 Proxy media
+
+Seeking through the subprocess backend costs a fresh FFmpeg per jump, because
+a pipe cannot seek (`pool.rs`, `Reader::seek`). Measured on a Windows machine
+with the full FFmpeg build: a preview frame from 4K is ~260 ms, of which
+~90 ms is starting the process and the rest is the decode; a drag of the
+playhead is several of those in a row, which is the "the picture catches up a
+second later" complaint.
+
+`wolfcut-media::proxy` builds small stand-ins and `ReaderPool::use_proxies`
+substitutes them. Numbers behind the choices, all measured rather than
+assumed:
+
+| | seek | drag of 6 |
+|---|---|---|
+| 4K original | 261 ms | 1570 ms |
+| 4K, 540p proxy | 101 ms | 608 ms |
+| 1080p original | 134 ms | 806 ms |
+| 1080p, 540p proxy | 89 ms | 715 ms |
+
+- An **all-intra** proxy seeks no faster than one keyed every 12 frames (90 vs
+  85 ms) and is three times the size. Keyframe distance is not the bottleneck.
+- **Hardware decoding** is *slower* for this: 411 ms against 338 for a single
+  frame, because initialising the decoder and reading the frame back costs
+  more than it saves when you only want one.
+- `ROLL_FORWARD_FRAMES` = 60 is close to right. Rolling costs ~1.7 ms/frame,
+  so it breaks even against a seek at about 75.
+- The floor is the ~90 ms process spawn, which no proxy can remove. That is
+  what the FFI decoder is for (§6.6), and the two are additive.
+
+**Why this is safe:** the pool is the preview path and only the preview path —
+the exporter opens its own `FfmpegDecoder`s on the originals (`export/lib.rs`)
+— so a proxy has no route into a finished file. That is structural, not a rule
+someone has to remember. The one invariant that needs a test is that a proxy
+shows the *same moment* as its original, since a cut placed against a preview
+a few frames out of step is wrong everywhere except on screen;
+`tests/proxy_substitution.rs` decodes both at the same timestamps and compares
+pixels.
+
+---
+
 ## 4. Export
 
 Hybrid pipeline in `wolfcut-export`:

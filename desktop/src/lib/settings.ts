@@ -30,6 +30,50 @@ export function setTranscriberLanguage(code: string): void {
   localStorage.setItem(LANGUAGE_KEY, code);
 }
 
+const PROXY_DIRECTORY_KEY = "wolfcut.proxy.directory";
+const PROXY_HEIGHT_KEY = "wolfcut.proxy.height";
+const PROXY_ENABLED_KEY = "wolfcut.proxy.enabled";
+
+/** Proxy sizes offered, mirroring the engine's own list. */
+export const PROXY_HEIGHTS = [540, 720, 1080];
+
+/** 720p: more than the monitor draws at the default half-resolution preview. */
+export const DEFAULT_PROXY_HEIGHT = 720;
+
+/**
+ * Where stand-ins are written. Null until one is chosen.
+ *
+ * There is deliberately no default folder. Proxies are large and they are the
+ * user's files to find, move and delete; putting them somewhere unasked is how
+ * an application ends up quietly holding gigabytes that nobody can locate.
+ */
+export function getProxyDirectory(): string | null {
+  return localStorage.getItem(PROXY_DIRECTORY_KEY);
+}
+
+export function setProxyDirectory(path: string | null): void {
+  if (path === null) localStorage.removeItem(PROXY_DIRECTORY_KEY);
+  else localStorage.setItem(PROXY_DIRECTORY_KEY, path);
+}
+
+export function getProxyHeight(): number {
+  const stored = Number(localStorage.getItem(PROXY_HEIGHT_KEY));
+  return PROXY_HEIGHTS.includes(stored) ? stored : DEFAULT_PROXY_HEIGHT;
+}
+
+export function setProxyHeight(height: number): void {
+  localStorage.setItem(PROXY_HEIGHT_KEY, String(height));
+}
+
+/** Whether imports build stand-ins. Off until a folder is chosen. */
+export function getProxyEnabled(): boolean {
+  return localStorage.getItem(PROXY_ENABLED_KEY) === "true" && getProxyDirectory() !== null;
+}
+
+export function setProxyEnabled(on: boolean): void {
+  localStorage.setItem(PROXY_ENABLED_KEY, String(on));
+}
+
 const TTS_MODEL_KEY = "wolfcut.tts.model";
 const TTS_VOICE_KEY = "wolfcut.tts.voice";
 

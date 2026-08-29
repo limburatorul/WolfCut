@@ -12,6 +12,7 @@ mod editor_api;
 mod jobs;
 mod playback;
 mod projects;
+mod proxies;
 mod templates;
 mod transcribe;
 mod tts;
@@ -687,7 +688,7 @@ struct ExportState(std::sync::Arc<jobs::SingleFlight>);
 
 /// The reader pool behind the paused monitor's true frames. One pool for the
 /// app's lifetime: its whole value is what stays warm between scrubs.
-struct PoolState(std::sync::Arc<std::sync::Mutex<wolfcut_media::ReaderPool>>);
+pub(crate) struct PoolState(pub(crate) std::sync::Arc<std::sync::Mutex<wolfcut_media::ReaderPool>>);
 
 /// What the UI sends for one true frame: an instant and a resolution. The
 /// clips come from the engine's own session - the UI no longer serialises
@@ -905,6 +906,10 @@ pub fn run() {
             app.manage(PoolState(std::sync::Arc::new(std::sync::Mutex::new(
                 wolfcut_media::ReaderPool::with_defaults(),
             ))));
+            // The proxy workers start with the app and sleep until something
+            // is imported; the folder they write to arrives later, from the
+            // settings the window restores.
+            app.manage(proxies::ProxyState::new(app.handle().clone()));
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -915,6 +920,10 @@ pub fn run() {
             read_media_bytes,
             extract_peaks,
             detect_silence,
+            proxies::proxy_configure,
+            proxies::ensure_proxy,
+            proxies::proxy_usage,
+            proxies::clear_proxies,
             audio_set_clips,
             transport_play,
             transport_pause,

@@ -119,6 +119,66 @@ export async function detectSilence(
   return invoke<SilentSpan[]>("detect_silence", { path, thresholdDb, minDuration });
 }
 
+/**
+ * Proxy media: small stand-ins the preview scrubs through.
+ *
+ * Seeking a big file costs a fresh FFmpeg per jump, most of it decoding. A
+ * stand-in cuts that; the engine substitutes them in the preview path alone,
+ * so the export never sees one.
+ */
+
+/** What `ensureProxy` decided about one file. */
+export type ProxyStatus = "ready" | "building" | "skipped";
+
+/** How the proxy workers are getting on. */
+export interface ProxyProgress {
+  queued: number;
+  building: number;
+  built: number;
+  failed: number;
+}
+
+/**
+ * Points the preview at a folder of stand-ins, or with null back at the
+ * originals. Takes effect on the next frame drawn - nothing reopens.
+ */
+export async function proxyConfigure(directory: string | null, height: number): Promise<void> {
+  return invoke<void>("proxy_configure", { directory, height });
+}
+
+/**
+ * Makes sure one file has a stand-in, building it in the background if not.
+ *
+ * Fire and forget, like artwork: the answer says what will happen, and the
+ * preview picks the proxy up by itself once it lands. `sourceHeight` comes
+ * from the probe the import already did.
+ */
+export async function ensureProxy(
+  path: string,
+  directory: string,
+  height: number,
+  sourceHeight: number,
+): Promise<ProxyStatus> {
+  return invoke<ProxyStatus>("ensure_proxy", { path, directory, height, sourceHeight });
+}
+
+/** Bytes of proxies in a folder. Counts only files this app wrote. */
+export async function proxyUsage(directory: string): Promise<number> {
+  return invoke<number>("proxy_usage", { directory });
+}
+
+/** Deletes this app's proxies from a folder, returning the bytes freed. */
+export async function clearProxies(directory: string): Promise<number> {
+  return invoke<number>("clear_proxies", { directory });
+}
+
+/** Subscribes to proxy progress. Resolves to an unsubscribe function. */
+export async function onProxyProgress(
+  handler: (progress: ProxyProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ProxyProgress>("proxies", (event) => handler(event.payload));
+}
+
 /** A project on disk, as the launch screen sees it. */
 export interface ProjectInfo {
   path: string;
