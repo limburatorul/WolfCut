@@ -2,7 +2,7 @@
 //!
 //! Seeking through the subprocess backend costs a fresh FFmpeg per jump, and
 //! most of that is decoding: measured on this machine, one preview frame from
-//! 4K costs about 260 ms, of which roughly 90 ms is starting the process and
+//! 4K costs about 260 ms, of which roughly 70 ms is starting the process and
 //! the rest is the decode. A 540p stand-in with dense keyframes brings the same
 //! frame to about 100 ms - 4K then scrubs faster than 1080p originals do.
 //!

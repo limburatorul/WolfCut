@@ -141,7 +141,7 @@ flowchart TB
 Seeking through the subprocess backend costs a fresh FFmpeg per jump, because
 a pipe cannot seek (`pool.rs`, `Reader::seek`). Measured on a Windows machine
 with the full FFmpeg build: a preview frame from 4K is ~260 ms, of which
-~90 ms is starting the process and the rest is the decode; a drag of the
+~70 ms is starting the process and the rest is the decode; a drag of the
 playhead is several of those in a row, which is the "the picture catches up a
 second later" complaint.
 
@@ -163,8 +163,19 @@ assumed:
   more than it saves when you only want one.
 - `ROLL_FORWARD_FRAMES` = 60 is close to right. Rolling costs ~1.7 ms/frame,
   so it breaks even against a seek at about 75.
-- The floor is the ~90 ms process spawn, which no proxy can remove. That is
-  what the FFI decoder is for (§6.6), and the two are additive.
+- The floor is the process spawn, which no proxy can remove: measured from
+  Rust with a direct `CreateProcess`, `ffmpeg -version` costs **68 ms** and a
+  trivial `cmd /c exit` costs **55 ms**. So FFmpeg's own start-up is only
+  ~13 ms of it and the rest is Windows creating a process at all. Two things
+  follow. Shipping a smaller FFmpeg build cannot help - 13 ms is the whole
+  prize. And 55 ms for a trivial process is far above the usual 10-20, which
+  points at per-process security scanning on this machine rather than at
+  anything the app does; the FFI decoder (§6.6) removes the spawn entirely and
+  so removes both, but its benefit will look smaller on a machine that creates
+  processes at normal speed.
+
+  Measure this from Rust, not from a shell. The same figures taken through Git
+  Bash read ~25 ms high, and an earlier version of this section quoted them.
 
 **Why this is safe:** the pool is the preview path and only the preview path —
 the exporter opens its own `FfmpegDecoder`s on the originals (`export/lib.rs`)
