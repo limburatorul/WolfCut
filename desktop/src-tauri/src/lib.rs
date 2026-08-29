@@ -201,6 +201,36 @@ async fn read_media_bytes(path: String) -> Result<tauri::ipc::Response, String> 
     .map(tauri::ipc::Response::new)
 }
 
+/// Where one file's audio goes quiet.
+///
+/// One FFmpeg pass over the audio, off the main thread because a long take
+/// takes seconds. What comes back is the engine's own `SilentSpan`, which is
+/// exactly what `removeSilence` takes back in: the UI carries the spans from
+/// one call to the other and does no arithmetic on them, so there is no second
+/// definition of where a cut lands.
+#[tauri::command]
+async fn detect_silence(
+    path: String,
+    threshold_db: f64,
+    min_duration: f64,
+) -> Result<Vec<wolfcut_project::SilentSpan>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        wolfcut_media::silence::detect(std::path::Path::new(&path), threshold_db, min_duration)
+            .map(|found| {
+                found
+                    .into_iter()
+                    .map(|silence| wolfcut_project::SilentSpan {
+                        start: silence.start,
+                        end: silence.end,
+                    })
+                    .collect()
+            })
+            .map_err(describe)
+    })
+    .await
+    .map_err(|error| format!("silence task failed: {error}"))?
+}
+
 /// Resolution of the cached waveform.
 ///
 /// 200 buckets per second is roughly two buckets per pixel at the default
@@ -884,6 +914,7 @@ pub fn run() {
             engine_version,
             read_media_bytes,
             extract_peaks,
+            detect_silence,
             audio_set_clips,
             transport_play,
             transport_pause,

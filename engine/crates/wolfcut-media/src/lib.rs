@@ -19,6 +19,7 @@ pub mod error;
 pub mod peaks;
 pub mod pool;
 pub mod probe;
+pub mod silence;
 
 mod process;
 
@@ -29,4 +30,5 @@ pub use error::{Error, Result};
 pub use peaks::Peaks;
 pub use pool::{FrameCache, ReaderPool};
 pub use probe::{AudioStream, MediaInfo, VideoStream, probe};
+pub use silence::Silence;
 pub use process::command;

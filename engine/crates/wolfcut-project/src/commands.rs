@@ -73,6 +73,22 @@ pub struct ClipMove {
     pub track_id: String,
 }
 
+/// One silent stretch to cut out, in the media file's own seconds.
+///
+/// Source seconds and not timeline seconds because that is what a detector
+/// measures, and because the same file can sit on the timeline twice at two
+/// different in-points; the clip decides where its own silence falls.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "types", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct SilentSpan {
+    /// Where the quiet begins, in source seconds.
+    pub start: f64,
+    /// Where it ends, in source seconds.
+    pub end: f64,
+}
+
 /// A partial update to one clip. Every field optional; `transition_in` and
 /// `text` are double-optional so "clear it" and "leave it alone" stay
 /// distinct on the wire (absent = untouched, null = cleared).
@@ -292,6 +308,35 @@ pub enum Command {
         /// The cut point, in timeline seconds.
         time: f64,
     },
+    /// Cuts the silent stretches out of one clip, closing the gaps behind
+    /// them.
+    ///
+    /// The spans arrive in source seconds; this arm maps them through the
+    /// clip's in-point and speed, so a trimmed or retimed clip still cuts in
+    /// the right places. Silence outside what the clip actually shows is
+    /// ignored, overlapping spans merge, and a surviving sliver shorter than
+    /// the minimum clip duration goes with the silence around it rather than
+    /// staying as something unusable.
+    ///
+    /// The first surviving piece keeps the clip's id, its incoming transition
+    /// and its head fade; the last keeps the tail fade; the rest are minted
+    /// fresh with neither. Cutting everything away is refused
+    /// ([`CommandError::NothingLeft`]) - a threshold set too high should cost
+    /// a dialog, not the clip.
+    ///
+    /// One clip, one track. Later clips on *this* lane close up behind the
+    /// cut when `ripple` is set; other tracks are left alone, so a clip whose
+    /// audio has been detached needs both halves done to stay in sync.
+    RemoveSilence {
+        /// The clip to cut. An unknown id is a tolerated no-op.
+        clip_id: String,
+        /// The silent spans, in source seconds, in any order.
+        ranges: Vec<SilentSpan>,
+        /// Whether the surviving pieces pack together and later clips on the
+        /// same track slide back by what was removed. False leaves the gaps
+        /// where the silence was.
+        ripple: bool,
+    },
     /// Rejoins split pieces into the earliest piece, which keeps its id.
     /// Errs with a user-facing sentence ([`why_not_merge`]) unless the
     /// pieces sit on one track, come from one file at one speed, touch
@@ -484,6 +529,9 @@ pub enum CommandError {
     /// [`Command::RemoveTimeline`] would have deleted the last timeline.
     #[error("A project needs at least one timeline.")]
     LastTimeline,
+    /// [`Command::RemoveSilence`] found nothing worth keeping.
+    #[error("That would remove the whole clip - try a lower threshold or a longer minimum gap.")]
+    NothingLeft,
 }
 
 /// Mints ids. Owned by the editor so restored projects advance it past every
@@ -928,6 +976,115 @@ pub fn apply(
             // "changed anything" are the same fact here.
             let applied = created.is_some();
             Ok(Outcome { created_id: created, applied })
+        }
+
+        Command::RemoveSilence { clip_id, ranges, ripple } => {
+            let timeline = project.active_mut();
+            let Some(index) = timeline.clips.iter().position(|clip| clip.id == clip_id) else {
+                return Ok(Outcome::default());
+            };
+            let original = timeline.clips[index].clone();
+            // What the clip actually shows of its file. Silence outside this
+            // belongs to a part of the take the clip already trimmed away.
+            let source_end = original.source_start + original.duration * original.speed;
+
+            // Source seconds become offsets from the clip's own start. The
+            // divide by speed is the whole reason this lives in the engine:
+            // a detector measures the file, the timeline shows it retimed.
+            let mut cuts: Vec<(f64, f64)> = ranges
+                .iter()
+                .filter_map(|span| {
+                    let start = span.start.max(original.source_start);
+                    let end = span.end.min(source_end);
+                    if end <= start {
+                        return None;
+                    }
+                    Some((
+                        (start - original.source_start) / original.speed,
+                        (end - original.source_start) / original.speed,
+                    ))
+                })
+                .collect();
+            if cuts.is_empty() {
+                return Ok(Outcome::default());
+            }
+            cuts.sort_by(|left, right| left.0.total_cmp(&right.0));
+
+            // Merging overlaps first is what lets the complement below be one
+            // forward walk instead of an interval set.
+            let mut merged: Vec<(f64, f64)> = Vec::with_capacity(cuts.len());
+            for (start, end) in cuts {
+                match merged.last_mut() {
+                    Some(last) if start <= last.1 + JOIN_EPSILON => last.1 = last.1.max(end),
+                    _ => merged.push((start, end)),
+                }
+            }
+
+            // The complement is what survives. A remnant too short to be a
+            // clip is dropped here rather than created and cleaned up later.
+            let mut kept: Vec<(f64, f64)> = Vec::new();
+            let mut cursor = 0.0_f64;
+            for (start, end) in &merged {
+                if start - cursor > MIN_CLIP_DURATION {
+                    kept.push((cursor, *start));
+                }
+                cursor = cursor.max(*end);
+            }
+            if original.duration - cursor > MIN_CLIP_DURATION {
+                kept.push((cursor, original.duration));
+            }
+            if kept.is_empty() {
+                return Err(CommandError::NothingLeft);
+            }
+
+            let removed =
+                original.duration - kept.iter().map(|(start, end)| end - start).sum::<f64>();
+            let last = kept.len() - 1;
+            let mut packed = 0.0_f64;
+            let pieces: Vec<Clip> = kept
+                .iter()
+                .enumerate()
+                .map(|(position, (begin, end))| {
+                    let mut piece = original.clone();
+                    if position > 0 {
+                        piece.id = mint.next("c");
+                        // The transition and the head fade belong to the cut
+                        // at the original clip's start, which the first piece
+                        // keeps; repeating them at every join would ramp the
+                        // sound in and out around each removed pause.
+                        piece.transition_in = None;
+                        piece.fade_in = 0.0;
+                    }
+                    if position < last {
+                        piece.fade_out = 0.0;
+                    }
+                    piece.start =
+                        if ripple { original.start + packed } else { original.start + begin };
+                    piece.duration = end - begin;
+                    piece.source_start = original.source_start + begin * original.speed;
+                    packed += end - begin;
+                    piece
+                })
+                .collect();
+            timeline.clips.splice(index..=index, pieces);
+
+            if ripple && removed > JOIN_EPSILON {
+                // Everything after the clip on its own lane closes up. The
+                // pieces all end before the old tail, so this cannot catch
+                // one of them.
+                let original_end = original.start + original.duration;
+                for clip in &mut timeline.clips {
+                    if clip.track_id == original.track_id
+                        && clip.start >= original_end - JOIN_EPSILON
+                    {
+                        clip.start = (clip.start - removed).max(0.0);
+                    }
+                }
+            }
+
+            // The clip keeps its id through the cut, so the user's selection
+            // survives and there is nothing new to select.
+            Ok(Outcome { created_id: None, applied: true })
         }
 
         Command::MergeClips { clip_ids } => {

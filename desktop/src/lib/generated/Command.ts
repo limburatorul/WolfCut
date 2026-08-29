@@ -2,6 +2,7 @@
 import type { ClipMove } from "./ClipMove";
 import type { ClipPatch } from "./ClipPatch";
 import type { NewMedia } from "./NewMedia";
+import type { SilentSpan } from "./SilentSpan";
 import type { TextStyle } from "./TextStyle";
 import type { TrackFlag } from "./TrackFlag";
 import type { TrimEdge } from "./TrimEdge";
@@ -109,7 +110,21 @@ clipIds: Array<string>,
 /**
  * The cut point, in timeline seconds.
  */
-time: number, } | { "op": "mergeClips", 
+time: number, } | { "op": "removeSilence", 
+/**
+ * The clip to cut. An unknown id is a tolerated no-op.
+ */
+clipId: string, 
+/**
+ * The silent spans, in source seconds, in any order.
+ */
+ranges: Array<SilentSpan>, 
+/**
+ * Whether the surviving pieces pack together and later clips on the
+ * same track slide back by what was removed. False leaves the gaps
+ * where the silence was.
+ */
+ripple: boolean, } | { "op": "mergeClips", 
 /**
  * The pieces to rejoin, any order.
  */

@@ -25,7 +25,7 @@ pub mod doc;
 pub mod editor;
 pub mod model;
 
-pub use commands::{Command, CommandError, Outcome, why_not_merge};
+pub use commands::{Command, CommandError, Outcome, SilentSpan, why_not_merge};
 pub use doc::{DocumentSettings, from_document, to_document};
 pub use editor::Editor;
 pub use model::Project;
@@ -34,7 +34,7 @@ pub use model::Project;
 mod tests {
     use serde_json::json;
 
-    use crate::commands::{ClipMove, ClipPatch, Command, TrackFlag, TrimEdge};
+    use crate::commands::{ClipMove, ClipPatch, Command, SilentSpan, TrackFlag, TrimEdge};
     use crate::doc::DocumentSettings;
     use crate::editor::Editor;
     use crate::model::{ClipKind, MediaKind, TextStyle};
@@ -1129,5 +1129,226 @@ mod tests {
         assert_eq!(text.font_weight, 900.0);
         assert_eq!(text.line_height, 0.5, "lines cannot collapse onto each other");
         assert_eq!(text.opacity, 1.0);
+    }
+
+    fn span(start: f64, end: f64) -> SilentSpan {
+        SilentSpan { start, end }
+    }
+
+    #[test]
+    fn silence_in_the_middle_leaves_two_pieces_that_close_the_gap() {
+        // The clip runs [0, 10) over source [0, 10). Cutting source 3..6 must
+        // leave three seconds, then the four that followed the pause pulled
+        // back to meet them - and still reading from source 6, because what
+        // the second piece shows did not change, only when it shows it.
+        let (mut editor, _, clip_id) = fixture();
+        let outcome = editor
+            .apply(Command::RemoveSilence {
+                clip_id: clip_id.clone(),
+                ranges: vec![span(3.0, 6.0)],
+                ripple: true,
+            })
+            .expect("cuts");
+        assert!(outcome.applied);
+
+        let clips = &editor.project().active().clips;
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[0].id, clip_id, "the first piece keeps the clip's identity");
+        assert_eq!((clips[0].start, clips[0].duration, clips[0].source_start), (0.0, 3.0, 0.0));
+        assert_eq!((clips[1].start, clips[1].duration, clips[1].source_start), (3.0, 4.0, 6.0));
+        assert_ne!(clips[1].id, clip_id, "the tail is minted, not reused");
+    }
+
+    #[test]
+    fn without_ripple_the_pieces_stay_where_the_sound_was() {
+        let (mut editor, _, clip_id) = fixture();
+        editor
+            .apply(Command::RemoveSilence {
+                clip_id,
+                ranges: vec![span(3.0, 6.0)],
+                ripple: false,
+            })
+            .expect("cuts");
+
+        let clips = &editor.project().active().clips;
+        assert_eq!(clips[0].start, 0.0);
+        assert_eq!(clips[1].start, 6.0, "the gap is left open where the silence was");
+        assert_eq!(clips[1].source_start, 6.0);
+    }
+
+    #[test]
+    fn a_ripple_closes_up_the_lane_and_leaves_the_others_alone() {
+        let (mut editor, media_id, clip_id) = fixture();
+        let tracks: Vec<String> =
+            editor.project().active().tracks.iter().map(|track| track.id.clone()).collect();
+        let neighbour = editor
+            .apply(Command::AddClip {
+                media_id: media_id.clone(),
+                track_id: tracks[0].clone(),
+                start: 12.0,
+            })
+            .expect("adds")
+            .created_id
+            .expect("id");
+        let bystander = editor
+            .apply(Command::AddClip { media_id, track_id: tracks[1].clone(), start: 12.0 })
+            .expect("adds")
+            .created_id
+            .expect("id");
+
+        editor
+            .apply(Command::RemoveSilence {
+                clip_id,
+                ranges: vec![span(3.0, 6.0)],
+                ripple: true,
+            })
+            .expect("cuts");
+
+        let active = editor.project().active();
+        let at = |id: &str| active.clips.iter().find(|clip| clip.id == id).expect("still there");
+        // Three seconds came out, so the clip behind it on the same lane
+        // starts three seconds earlier.
+        assert_eq!(at(&neighbour).start, 9.0);
+        // A different lane is a different edit; nothing there was asked for.
+        assert_eq!(at(&bystander).start, 12.0);
+    }
+
+    #[test]
+    fn speed_maps_source_silence_onto_the_timeline() {
+        // At double speed the clip shows source [0, 10) across timeline
+        // [0, 5), so two seconds of source silence is one second of timeline.
+        // Getting this wrong is exactly why the mapping is not done in the UI.
+        let (mut editor, _, clip_id) = fixture();
+        editor
+            .apply(Command::SetClipSpeed { clip_id: clip_id.clone(), speed: 2.0 })
+            .expect("retimes");
+        assert_eq!(editor.project().active().clips[0].duration, 5.0);
+
+        editor
+            .apply(Command::RemoveSilence {
+                clip_id,
+                ranges: vec![span(4.0, 6.0)],
+                ripple: true,
+            })
+            .expect("cuts");
+
+        let clips = &editor.project().active().clips;
+        assert_eq!(clips.len(), 2);
+        assert_eq!((clips[0].start, clips[0].duration), (0.0, 2.0));
+        assert_eq!((clips[1].start, clips[1].duration), (2.0, 2.0));
+        assert_eq!(clips[1].source_start, 6.0, "the in-point is source seconds, not timeline");
+    }
+
+    #[test]
+    fn silence_the_clip_does_not_show_is_ignored() {
+        // Split first, so the tail is a clip with a real in-point: it starts
+        // at timeline 4 and shows source [4, 10).
+        let (mut editor, _, clip_id) = fixture();
+        editor
+            .apply(Command::SplitClips { clip_ids: vec![clip_id], time: 4.0 })
+            .expect("splits");
+        let tail = editor.project().active().clips[1].id.clone();
+        assert_eq!(editor.project().active().clips[1].source_start, 4.0);
+
+        // Source 1..2 is inside the file but before this clip's in-point.
+        let outcome = editor
+            .apply(Command::RemoveSilence {
+                clip_id: tail.clone(),
+                ranges: vec![span(1.0, 2.0)],
+                ripple: true,
+            })
+            .expect("tolerated");
+        assert!(!outcome.applied, "nothing the clip shows was silent");
+        assert_eq!(editor.project().active().clips.len(), 2);
+
+        // Source 5..7 is inside it, one second in.
+        editor
+            .apply(Command::RemoveSilence {
+                clip_id: tail,
+                ranges: vec![span(5.0, 7.0)],
+                ripple: true,
+            })
+            .expect("cuts");
+        let clips = &editor.project().active().clips;
+        assert_eq!(clips.len(), 3);
+        assert_eq!((clips[1].start, clips[1].duration, clips[1].source_start), (4.0, 1.0, 4.0));
+        assert_eq!((clips[2].start, clips[2].duration, clips[2].source_start), (5.0, 3.0, 7.0));
+    }
+
+    #[test]
+    fn overlapping_spans_merge_into_one_cut() {
+        let (mut editor, _, clip_id) = fixture();
+        editor
+            .apply(Command::RemoveSilence {
+                clip_id,
+                // Deliberately unsorted and overlapping: 2..8 in three pieces.
+                ranges: vec![span(6.0, 8.0), span(3.0, 6.5), span(2.0, 4.0)],
+                ripple: true,
+            })
+            .expect("cuts");
+
+        let clips = &editor.project().active().clips;
+        assert_eq!(clips.len(), 2, "three overlapping spans are one hole");
+        assert_eq!((clips[0].start, clips[0].duration), (0.0, 2.0));
+        assert_eq!((clips[1].start, clips[1].duration, clips[1].source_start), (2.0, 2.0, 8.0));
+    }
+
+    #[test]
+    fn cutting_everything_away_is_refused() {
+        let (mut editor, _, clip_id) = fixture();
+        let refused = editor.apply(Command::RemoveSilence {
+            clip_id,
+            ranges: vec![span(0.0, 10.0)],
+            ripple: true,
+        });
+        assert_eq!(refused, Err(crate::commands::CommandError::NothingLeft));
+        assert_eq!(editor.project().active().clips.len(), 1, "the clip is untouched");
+    }
+
+    #[test]
+    fn slivers_too_short_to_be_clips_go_with_the_silence() {
+        // Two spans with five milliseconds between them - less than the
+        // minimum clip duration. Keeping that would leave a clip nobody can
+        // grab; here it takes the whole clip with it, which is a refusal.
+        let (mut editor, _, clip_id) = fixture();
+        let refused = editor.apply(Command::RemoveSilence {
+            clip_id,
+            ranges: vec![span(0.0, 1.0), span(1.005, 10.0)],
+            ripple: true,
+        });
+        assert_eq!(refused, Err(crate::commands::CommandError::NothingLeft));
+    }
+
+    #[test]
+    fn an_unknown_clip_is_a_tolerated_no_op() {
+        let (mut editor, _, _) = fixture();
+        let outcome = editor
+            .apply(Command::RemoveSilence {
+                clip_id: "nope".to_owned(),
+                ranges: vec![span(1.0, 2.0)],
+                ripple: true,
+            })
+            .expect("tolerated");
+        assert!(!outcome.applied);
+    }
+
+    #[test]
+    fn the_whole_cut_is_one_undo_step() {
+        // However many pieces it leaves, the user pressed one button.
+        let (mut editor, _, clip_id) = fixture();
+        editor
+            .apply(Command::RemoveSilence {
+                clip_id: clip_id.clone(),
+                ranges: vec![span(2.0, 3.0), span(5.0, 6.0), span(8.0, 9.0)],
+                ripple: true,
+            })
+            .expect("cuts");
+        assert_eq!(editor.project().active().clips.len(), 4);
+
+        assert!(editor.undo());
+        let clips = &editor.project().active().clips;
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].id, clip_id);
+        assert_eq!((clips[0].start, clips[0].duration), (0.0, 10.0));
     }
 }
