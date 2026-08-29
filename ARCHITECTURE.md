@@ -196,22 +196,27 @@ others. Meanwhile `editor_api.rs` converts poison to a `String` error at
 in one codebase. Pick one (probably: poison = clear the poisoned state and
 carry on, since every cache here is rebuildable).
 
-### 6.3 Unbounded growth
+### 6.3 Unbounded growth — *fixed, and one entry withdrawn*
 
-- `redo: Vec<Project>` in the engine editor has **no cap** (undo is capped at
-  200) — each entry is a deep clone of the whole project
-  (`wolfcut-project/src/editor.rs:28`).
-- `desktop/src/lib/assets.ts` — the `peaks`/`strips`/`stripFrames` maps grow
-  per media id with no eviction, and no `ImageBitmap.close()` is ever called;
-  GPU-backed bitmaps wait for GC. A long session with many imports leaks
-  VRAM-adjacent memory.
+- `desktop/src/lib/assets.ts` — the `peaks`/`strips`/`stripFrames` maps grew
+  per media id with no eviction and never called `ImageBitmap.close()`, so a
+  long session with many imports leaked VRAM-adjacent memory. `releaseAssets`
+  now sweeps the three maps against the ids the project still lists, closing
+  the bitmaps it drops, from the same pass that already requests artwork.
+- `redo: Vec<Project>` was listed here as uncapped. It is not, and the entry
+  was wrong: `redo` only ever grows as `undo` shrinks, and `apply` clears it,
+  so the pair is conserved beneath undo's 200-entry cap. Capping it as well
+  would have been dead code. The real cost is the one that cap already
+  bounds — up to 200 deep clones of the document.
 
 ### 6.4 Swallowed errors
 
 Twenty `catch(() => undefined)`-shaped sites. Most are defensible
-(fire-and-forget artwork writes), but four are in the engine-session queue
-itself (`useEngineSession.ts:101,118,129,206`) — a failed **undo/redo**
-drains silently. Host side: `export.rs:38` drops progress-event send
+(fire-and-forget artwork writes). The two that were not — **undo and redo**
+in `useEngineSession.ts` — now report through `onCommandError`, the toast
+path every other command already used. Running out of history was never
+among what they hid: the engine returns state for that, so what drained
+silently was a lost session or a poisoned lock. Host side: `export.rs:38` drops progress-event send
 failures; `playback.rs:251` drops audio-error emission failures. A grep for
 `catch(() =>` is a good periodic audit.
 
@@ -297,11 +302,14 @@ a deleted document is worse than no comment.
    temp project folders. The "fresh project unopenable" and "import before
    open" bugs both lived here; both were testable without a UI.
 2. **One poison policy** in `playback.rs` (§6.2) — mechanical, removes the
-   cascade failure mode.
-3. **Cap the redo stack and evict `assets.ts` bitmaps** (§6.3) — small
-   patches, close real leaks.
-4. **Surface the swallowed undo/redo failures** (§6.4) — they already have a
-   toast pathway.
+   cascade failure mode. `editor_close` is done: it used to skip a poisoned
+   lock entirely, which left the dead session installed, and since every
+   other entry point turns poison into an error, one panic then refused
+   *every* project until the app restarted. It now recovers the guard and
+   clears the poison. `playback.rs` itself is still open.
+3. ~~Cap the redo stack and~~ **evict `assets.ts` bitmaps** (§6.3) — done.
+   The redo half of this item was not a real fault; see §6.3.
+4. ~~**Surface the swallowed undo/redo failures**~~ (§6.4) — done.
 5. **A `--features gpu,ffi` CI job** (§6.6).
 6. **The chains mirror** (§6.1) — the big one; a design conversation, not a
    patch. Engine-emitted preview looks would delete ~700 lines of mirrored

@@ -68,5 +68,5 @@ To learn more about contributing to this project please refer to [this Discussio
 - [ ] Auto Human Face Detection & Blurring features: YuNet + tracker, or look for better alternative tech.
 - [ ] Caption text highlighting: Achievable with Whisper.cpp for timestamps.
 - [ ] Profanity detection from Audio: Whisper + dictionary.
-- [ ] Audio Silence removal feature.
+- [x] Audio Silence removal feature.
 - [ ] Auto Reframe: YuNet/person detector + tracker.

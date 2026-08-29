@@ -6,6 +6,18 @@ behaviour.
 
 ## Unreleased
 
+- Remove silence: with one clip selected, Edit → Remove silence finds the
+  pauses in it and cuts them out, closing the gaps behind them. The level
+  and the shortest pause worth cutting are yours to set, because they
+  describe the recording rather than the app. It is one undo.
+- Artwork for media removed from the bin is released instead of being held
+  for the rest of the session. Filmstrips hold GPU memory, so a long day of
+  importing and deleting used to only ever grow.
+- An undo or redo that fails now says so. It used to do nothing, silently.
+- A project can be opened again after a command panics mid-edit. Closing
+  the broken session used to be skipped, which left it installed and
+  refused every project until the app was restarted.
+
 - Text to speech: File → Text to speech turns typed narration into an audio
   clip at the playhead, spoken by one of 36 Kokoro voices (American and
   British English, Chinese) at a chosen pace. Generation runs entirely on
