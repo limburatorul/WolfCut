@@ -47,6 +47,40 @@ jobs:
           scripts/generate-ipc-types.sh engine
           git diff --exit-code desktop/src/lib/generated
 
+  # The compositor the app actually ships, which the job above never builds.
+  #
+  # `wolfcut-render`'s wgpu path is off by default so engine-only work does
+  # not pay for the wgpu tree - but `desktop/src-tauri` turns it on, so every
+  # release contains code the default test job cannot compile, let alone run.
+  # Seven tests in wolfcut-render exist only under this feature.
+  engine-gpu:
+    name: Engine tests (GPU compositor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+          # Its own cache key: this feature set drags in the whole wgpu tree,
+          # and sharing one with the default job would have each evict the
+          # other on every run.
+          key: gpu
+      # Lavapipe, so the compositor tests measure a real adapter instead of
+      # skipping themselves. Not fatal if it fails: every gpu test begins
+      # `let Some(gpu) = gpu() else { return }`, so a runner without an
+      # adapter still gets the compile and the lints, which is the bit-rot
+      # this job exists to catch.
+      - name: Software Vulkan adapter
+        continue-on-error: true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers
+      - run: cargo test --workspace --features wolfcut-render/gpu,wolfcut-export/gpu
+        working-directory: engine
+      - run: cargo clippy --workspace --all-targets --features wolfcut-render/gpu,wolfcut-export/gpu -- -D warnings
+        working-directory: engine
+
   app:
     name: App (${{ matrix.platform }})
     strategy:
@@ -263,7 +297,7 @@ jobs:
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    needs: [engine-tests, app]
+    needs: [engine-tests, engine-gpu, app]
     runs-on: ubuntu-latest
     permissions:
       contents: write

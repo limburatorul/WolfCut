@@ -228,12 +228,26 @@ failures; `playback.rs:251` drops audio-error emission failures. A grep for
 - Counterexample done right: `peaks_bytes` validates cached bytes with
   `plausible_peaks` before trusting them (`lib.rs:233`).
 
-### 6.6 Default builds don't test the real paths
+### 6.6 Default builds don't test the real paths — *half fixed, half misdiagnosed*
 
-`cargo test` at default features exercises **neither** the wgpu compositor
-(`gpu` off) **nor** the FFI decoder (`ffi` off) — the two code paths preview
-and scrubbing actually rely on in a bundled build. CI should run at least one
-job with `--features gpu,ffi`.
+The `gpu` half was right, and is now covered. `desktop/src-tauri` enables
+`wolfcut-render/gpu` and `wolfcut-export/gpu`, so every release shipped a
+compositor the default test job could not compile, let alone run — seven tests
+in `wolfcut-render` exist only under that feature and had never executed in
+CI. The `engine-gpu` job builds, lints and runs that feature set, installs a
+software Vulkan adapter so the tests measure something real, and gates the
+release.
+
+The `ffi` half was wrong. **Nothing enables it** — not `desktop/src-tauri`'s
+Cargo.toml, not any CI job, not the flake; the only mention of the feature in
+the repository is its own declaration. So `ffi.rs` (~19k), `pool.rs`'s
+`Linked` branch and `tests/ffi_decode.rs` are compiled out of every build that
+exists, and the shipped app decodes through the subprocess backend
+everywhere — scrubbing included. "Untested" understates it: the exact-seek
+path §3 credits for scrubbing is not in the product at all. That is a decision
+to make, not a job to add: either turn it on for the desktop crate and accept
+the FFmpeg-development build requirement, or retire the module. A CI job for
+code nothing compiles would only be preserving it.
 
 ### 6.7 Frontend hotspots
 
@@ -289,8 +303,8 @@ a deleted document is worse than no comment.
 
 | Area | Tests | Gaps |
 |---|---|---|
-| Engine crates | 179 (core 31, media 48, project 41, render 28, export 32, cli 3) | `gpu`/`ffi` features untested at defaults (§6.6) |
-| Desktop Rust | 15 | **Zero** for `lib.rs` (all 25 commands), `editor_api.rs` — the session lifecycle that produced three of this week's bug reports |
+| Engine crates | 187 at defaults, 194 with `gpu` | `ffi` is not compiled by anything, in CI or in the product (§6.6) |
+| Desktop Rust | 30 | `editor_api.rs` is covered now — open, apply, undo, redo, close and the poison path, over temp project folders. `lib.rs`'s own commands are still at **zero** |
 | Frontend lib | 98 across 9 files | solid |
 | Frontend components/hooks | **0** | `useEngineSession` (queue, echo, autosave) is the highest-value target; the big components need at least smoke renders |
 
@@ -298,9 +312,10 @@ a deleted document is worse than no comment.
 
 ## 9. Where to improve first (opinionated)
 
-1. **Session-lifecycle tests for `editor_api.rs`** — open/apply/close against
-   temp project folders. The "fresh project unopenable" and "import before
-   open" bugs both lived here; both were testable without a UI.
+1. ~~**Session-lifecycle tests for `editor_api.rs`**~~ — done. Open, apply,
+   undo, redo, close and the poison path, over temp project folders; the
+   "fresh project unopenable" and "import before open" bugs both have tests
+   now. The commands in `lib.rs` are the remaining half of this item.
 2. **One poison policy** in `playback.rs` (§6.2) — mechanical, removes the
    cascade failure mode. `editor_close` is done: it used to skip a poisoned
    lock entirely, which left the dead session installed, and since every
@@ -310,7 +325,9 @@ a deleted document is worse than no comment.
 3. ~~Cap the redo stack and~~ **evict `assets.ts` bitmaps** (§6.3) — done.
    The redo half of this item was not a real fault; see §6.3.
 4. ~~**Surface the swallowed undo/redo failures**~~ (§6.4) — done.
-5. **A `--features gpu,ffi` CI job** (§6.6).
+5. ~~A `--features gpu,ffi` CI job~~ (§6.6) — the `gpu` job is in. `ffi`
+   turned out to be compiled by nothing at all, which is a bigger question
+   than a CI job.
 6. **The chains mirror** (§6.1) — the big one; a design conversation, not a
    patch. Engine-emitted preview looks would delete ~700 lines of mirrored
    TS and the entire pinned-string coupling.

@@ -114,12 +114,11 @@ fn parse(log: &str) -> Vec<Silence> {
         if let Some(start) = field(line, "silence_start:") {
             open = Some(start);
         } else if let Some(end) = field(line, "silence_end:") {
-            if let Some(start) = open.take() {
-                // A zero-length or backwards range says the log was garbled;
-                // either way there is nothing to cut.
-                if end > start {
-                    found.push(Silence { start, end });
-                }
+            // `take` first and filter after, so a garbled pair still closes
+            // the open start rather than leaving it to swallow the next one.
+            // A zero-length or backwards range is nothing to cut either way.
+            if let Some(start) = open.take().filter(|start| end > *start) {
+                found.push(Silence { start, end });
             }
         }
     }
