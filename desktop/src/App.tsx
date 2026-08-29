@@ -24,6 +24,7 @@ import {
 import { Resizer } from "./components/Resizer";
 import { RightPanel, type RightTab } from "./components/RightPanel";
 import { SaveTemplateDialog } from "./components/SaveTemplateDialog";
+import { SilenceDialog } from "./components/SilenceDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { StartScreen, type ProjectSession } from "./components/StartScreen";
 import { TitleBar } from "./components/TitleBar";
@@ -49,6 +50,7 @@ import {
   type TimelineMeta,
 } from "./lib/editor";
 import {
+  detectSilence,
   editorSave,
   engineVersion,
   newMediaFromSummary,
@@ -284,6 +286,12 @@ function Editor({
   // The save-as-template sheet: null closed, otherwise whether the host is
   // packing the bundle right now.
   const [templateDialog, setTemplateDialog] = useState<null | { busy: boolean }>(null);
+  // The remove-silence sheet: which clip it will cut, and whether the
+  // detector is running right now.
+  const [silenceDialog, setSilenceDialog] = useState<null | {
+    clipId: string;
+    busy: boolean;
+  }>(null);
 
   useEffect(() => {
     engineVersion()
@@ -850,6 +858,71 @@ function Editor({
 
   const openTemplateDialog = useCallback(() => setTemplateDialog({ busy: false }), []);
 
+  const openSilence = useCallback(() => {
+    const clipId = selectedClipIds.length === 1 ? selectedClipIds[0] : null;
+    if (clipId) setSilenceDialog({ clipId, busy: false });
+  }, [selectedClipIds]);
+
+  /**
+   * Finds the pauses in the selected clip's file and cuts them out.
+   *
+   * The spans reach the engine exactly as the detector reported them, in the
+   * file's own seconds; the clip's in-point and speed are the engine's to
+   * apply. Whether the cut landed is read from the clip count afterwards,
+   * because a refused command reports itself through the queue's error path
+   * and resolves the same way a successful one does.
+   *
+   * A miss - nothing that quiet, or a refusal - leaves the sheet open, so the
+   * next attempt is one drag rather than another trip through the menu.
+   */
+  const runSilence = useCallback(
+    async (thresholdDb: number, minDuration: number, ripple: boolean) => {
+      const target = silenceDialog;
+      const engineProject = viewRef.current?.project;
+      if (!target || !engineProject) return;
+      const clip = findClip(engineProject, target.clipId);
+      const media = clip ? findMedia(engineProject, clip.mediaId) : null;
+      if (!media) {
+        setSilenceDialog(null);
+        return;
+      }
+
+      setSilenceDialog({ ...target, busy: true });
+      try {
+        const ranges = await detectSilence(media.path, thresholdDb, minDuration);
+        if (ranges.length === 0) {
+          pushToast(t("toast.noSilence"), true);
+          setSilenceDialog({ ...target, busy: false });
+          return;
+        }
+        // Whether the cut landed is measured, not reported: a refused
+        // command reaches the user through the queue's error path and
+        // resolves the dispatch exactly as a successful one does.
+        //
+        // Duration and not the clip count, because silence at one end of the
+        // take leaves a single piece - the count would call that nothing
+        // happening. The piece keeping the clip's id always comes out
+        // shorter, whichever pauses went.
+        const clipDuration = () => {
+          const current = viewRef.current;
+          return current ? (findClip(current.project, target.clipId)?.duration ?? 0) : 0;
+        };
+        const before = clipDuration();
+        await dispatch({ op: "removeSilence", clipId: target.clipId, ranges, ripple });
+        if (clipDuration() < before) {
+          pushToast(tp("toast.silenceRemoved", ranges.length), false);
+          setSilenceDialog(null);
+        } else {
+          setSilenceDialog({ ...target, busy: false });
+        }
+      } catch (cause) {
+        pushToast(String(cause), true);
+        setSilenceDialog({ ...target, busy: false });
+      }
+    },
+    [silenceDialog, viewRef, dispatch, pushToast, t, tp],
+  );
+
   const leaveForTemplate = useCallback(
     (template: TemplateInfo) => {
       // Save what is open first: leaving for the fill flow closes this
@@ -1159,6 +1232,14 @@ function Editor({
               onSelect: splitAtPlayhead,
             },
             {
+              label: t("menu.edit.removeSilence"),
+              icon: "waveform",
+              // One clip: the cut ripples its own lane, and running it over a
+              // mixed selection would shift each of them under the others.
+              disabled: selectedClipIds.length !== 1,
+              onSelect: openSilence,
+            },
+            {
               label: tp("menu.edit.deleteClips", Math.max(1, selectedClipIds.length)),
               icon: "trash",
               hint: "Del",
@@ -1208,6 +1289,7 @@ function Editor({
       onCloseProject,
       openExport,
       openSettings,
+      openSilence,
       openSpeech,
       openTemplateDialog,
       placeMediaSet,
@@ -1604,6 +1686,17 @@ function Editor({
               });
           }}
           onCancel={() => setModifyingProject(null)}
+        />
+      )}
+
+      {silenceDialog && (
+        <SilenceDialog
+          clipName={findClip(project, silenceDialog.clipId)?.name ?? ""}
+          busy={silenceDialog.busy}
+          onRun={(thresholdDb, minDuration, ripple) =>
+            void runSilence(thresholdDb, minDuration, ripple)
+          }
+          onCancel={() => setSilenceDialog(null)}
         />
       )}
 

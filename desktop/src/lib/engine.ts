@@ -17,6 +17,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { EditorCommand, EditorView, NewMedia } from "./editor";
 import type { ExportClip } from "./generated/export/ExportClip";
+import type { SilentSpan } from "./generated/SilentSpan";
+
+export type { SilentSpan };
 
 export interface VideoStreamInfo {
   index: number;
@@ -95,6 +98,26 @@ export async function extractPeaks(path: string, project: string | null): Promis
   return invoke<ArrayBuffer>("extract_peaks", { path, project });
 }
 
+
+/**
+ * Where one media file's audio goes quiet.
+ *
+ * `thresholdDb` is the level at or below which sound counts as silence and
+ * `minDuration` the shortest stretch worth reporting; both describe the
+ * recording, so they come from the user rather than from a constant here.
+ *
+ * The spans come back in the file's own seconds and go straight into a
+ * `removeSilence` command untouched. Mapping them onto the timeline is the
+ * engine's job - it knows the clip's in-point and speed - and doing it here
+ * would be a second definition of where a cut lands.
+ */
+export async function detectSilence(
+  path: string,
+  thresholdDb: number,
+  minDuration: number,
+): Promise<SilentSpan[]> {
+  return invoke<SilentSpan[]>("detect_silence", { path, thresholdDb, minDuration });
+}
 
 /** A project on disk, as the launch screen sees it. */
 export interface ProjectInfo {
