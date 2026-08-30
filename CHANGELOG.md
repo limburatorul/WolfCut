@@ -6,6 +6,11 @@ behaviour.
 
 ## Unreleased
 
+- The timeline has a horizontal scrollbar. Panning time used to be a gesture
+  only - shift-wheel, or a trackpad sideways - which left a mouse no way to
+  reach the far end of a long edit, and nothing on screen saying how much of
+  it was off to the right.
+
 - Proxy media: Settings → Performance takes a folder, and imports bigger than
   the proxy size get a small stand-in built there in the background. The
   editor scrubs through those instead of the originals, which is the

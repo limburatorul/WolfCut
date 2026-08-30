@@ -219,6 +219,7 @@ export function TimelinePanel({
 }) {
   const { t } = useLocale();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const timeScroll = useRef<HTMLDivElement>(null);
   const drag = useRef<DragState | null>(null);
   /** Last pointer position, replayed by the edge-scroll loop. */
   const pointer = useRef<{ x: number; y: number } | null>(null);
@@ -232,6 +233,11 @@ export function TimelinePanel({
   const headerScroll = useRef<HTMLDivElement>(null);
   // The lane and clip set being drawn: the active timeline's.
   const timeline = activeTimeline(project);
+  // Where the edit ends, which is how far the scrollbar below reaches.
+  const contentEnd = timeline.clips.reduce(
+    (end, clip) => Math.max(end, clip.start + clip.duration),
+    0,
+  );
   // Top-most track first on screen; the model stores them bottom-most first to
   // match the engine's compositing order.
   const rows: Track[] = [...timeline.tracks].reverse();
@@ -484,6 +490,17 @@ export function TimelinePanel({
       element.scrollTop = trackScroll;
     }
   }, [trackScroll]);
+
+  // The same arrangement horizontally: the bar under the lanes is a real
+  // scroll container, and time is held in seconds, so the two have to be
+  // converted through the zoom on the way in and out. Guarded for the same
+  // reason - assigning scrollLeft fires the handler back.
+  useEffect(() => {
+    const element = timeScroll.current;
+    if (!element) return;
+    const pixels = scrollLeft / secondsPerPixel;
+    if (Math.abs(element.scrollLeft - pixels) > 0.5) element.scrollLeft = pixels;
+  }, [scrollLeft, secondsPerPixel]);
 
   // The stylesheet has already been applied by the time this runs, so the
   // computed values it reads are the new theme's.
@@ -1034,6 +1051,7 @@ export function TimelinePanel({
         />
       </Bar>
 
+      <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1">
         <div
           className="flex shrink-0 flex-col border-r border-hairline"
@@ -1081,6 +1099,36 @@ export function TimelinePanel({
             if (hit) onClipContextMenu(hit.clip.id, event.clientX, event.clientY);
           }}
         />
+      </div>
+
+      {/*
+        Panning time had only ever been a gesture - shift-wheel, or a
+        trackpad's horizontal axis - which leaves a mouse with no way to reach
+        the far end of a long edit, and nothing on screen saying how much of it
+        is off to the right.
+
+        The spacer is `content + 100%`: the percentage resolves against this
+        container, so the range ends with the last clip at the left edge rather
+        than pinned to the right, which is what you want when trimming a tail.
+        The extent also takes `scrollLeft` into account, so a position reached
+        by some other means - the edge-scroll during a drag, the playhead
+        following playback - is never clamped back by this bar.
+      */}
+      <div className="flex h-2.5 shrink-0 border-t border-hairline">
+        <div className="shrink-0 border-r border-hairline" style={{ width: HEADER_WIDTH }} />
+        <div
+          ref={timeScroll}
+          onScroll={(event) => onScroll(event.currentTarget.scrollLeft * secondsPerPixel)}
+          className="thin-scroll min-w-0 flex-1 overflow-x-auto overflow-y-hidden"
+        >
+          <div
+            style={{
+              width: `calc(${Math.max(contentEnd, scrollLeft) / secondsPerPixel}px + 100%)`,
+              height: 1,
+            }}
+          />
+        </div>
+      </div>
       </div>
     </div>
   );
