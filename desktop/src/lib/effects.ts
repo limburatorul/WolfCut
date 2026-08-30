@@ -619,8 +619,9 @@ export interface TransitionDefinition {
   blurb: string;
   /**
    * False while the engine cannot render it - the card stays browsable with
-   * a "Soon" badge, exactly as the whole catalogue once was. The motion
-   * transitions wait on animated transforms in the engine.
+   * a "Soon" badge, exactly as the whole catalogue once was. Nothing is
+   * waiting at present: the engine animates transforms and crops per frame
+   * (`Clip::motion_at`), which is what the motion set needed.
    */
   implemented: boolean;
   /** Seconds a freshly applied transition covers. */
@@ -663,7 +664,7 @@ export const TRANSITIONS: TransitionDefinition[] = [
     get label() { return t("transitions.wipe-left.label"); },
     category: "motion",
     get blurb() { return t("transitions.wipe-left.blurb"); },
-    implemented: false,
+    implemented: true,
     defaultDuration: 0.8,
   },
   {
@@ -671,7 +672,7 @@ export const TRANSITIONS: TransitionDefinition[] = [
     get label() { return t("transitions.wipe-right.label"); },
     category: "motion",
     get blurb() { return t("transitions.wipe-right.blurb"); },
-    implemented: false,
+    implemented: true,
     defaultDuration: 0.8,
   },
   {
@@ -679,7 +680,7 @@ export const TRANSITIONS: TransitionDefinition[] = [
     get label() { return t("transitions.push.label"); },
     category: "motion",
     get blurb() { return t("transitions.push.blurb"); },
-    implemented: false,
+    implemented: true,
     defaultDuration: 0.8,
   },
   {
@@ -687,7 +688,39 @@ export const TRANSITIONS: TransitionDefinition[] = [
     get label() { return t("transitions.zoom.label"); },
     category: "motion",
     get blurb() { return t("transitions.zoom.blurb"); },
-    implemented: false,
+    implemented: true,
+    defaultDuration: 0.8,
+  },
+  {
+    id: "wipe-down",
+    get label() { return t("transitions.wipe-down.label"); },
+    category: "motion",
+    get blurb() { return t("transitions.wipe-down.blurb"); },
+    implemented: true,
+    defaultDuration: 0.8,
+  },
+  {
+    id: "wipe-up",
+    get label() { return t("transitions.wipe-up.label"); },
+    category: "motion",
+    get blurb() { return t("transitions.wipe-up.blurb"); },
+    implemented: true,
+    defaultDuration: 0.8,
+  },
+  {
+    id: "push-up",
+    get label() { return t("transitions.push-up.label"); },
+    category: "motion",
+    get blurb() { return t("transitions.push-up.blurb"); },
+    implemented: true,
+    defaultDuration: 0.8,
+  },
+  {
+    id: "zoom-in",
+    get label() { return t("transitions.zoom-in.label"); },
+    category: "motion",
+    get blurb() { return t("transitions.zoom-in.blurb"); },
+    implemented: true,
     defaultDuration: 0.8,
   },
 ];

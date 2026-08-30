@@ -6,6 +6,7 @@
 //! `wgpu` will slot into.
 
 use wolfcut_core::frame::{BYTES_PER_PIXEL, Frame};
+use wolfcut_core::timeline::Crop;
 
 /// A layer's placement beyond its base position, in output pixels.
 ///
@@ -55,12 +56,22 @@ pub struct Layer<'a> {
     pub y: i32,
     /// Scale, rotation and translation about the layer's centre.
     pub placement: Placement,
+    /// The part of the *output* frame this layer may paint. Full unless a
+    /// wipe is running: the picture stands still and a hard edge sweeps
+    /// across it, which is what makes a wipe a wipe rather than a slide.
+    pub crop: Crop,
 }
 
 impl<'a> Layer<'a> {
     /// A layer drawn at the origin, fully opaque.
     pub fn new(frame: &'a Frame) -> Self {
-        Self { frame, opacity: 1.0, x: 0, y: 0, placement: Placement::IDENTITY }
+        Self { frame, opacity: 1.0, x: 0, y: 0, placement: Placement::IDENTITY, crop: Crop::FULL }
+    }
+
+    /// Restricts the layer to part of the output frame.
+    pub fn with_crop(mut self, crop: Crop) -> Self {
+        self.crop = crop;
+        self
     }
 
     /// Sets the blend strength.
@@ -109,8 +120,14 @@ impl Compositor for CpuCompositor {
 
             let source = layer.frame;
 
+            // Worked out once and handed to whichever path draws: a crop that
+            // uncovers nothing means there is no layer to draw at all.
+            let Some(crop) = crop_bounds(layer.crop, width, height) else {
+                continue;
+            };
+
             if !layer.placement.is_identity() {
-                blend_transformed(&mut output, layer, opacity);
+                blend_transformed(&mut output, layer, opacity, crop);
                 continue;
             }
 
@@ -118,6 +135,12 @@ impl Compositor for CpuCompositor {
                 continue;
             };
             let Some((dst_y, src_y, rows)) = overlap(layer.y, source.height(), height) else {
+                continue;
+            };
+            let Some((dst_x, src_x, columns)) = trim(dst_x, src_x, columns, crop.0, crop.2) else {
+                continue;
+            };
+            let Some((dst_y, src_y, rows)) = trim(dst_y, src_y, rows, crop.1, crop.3) else {
                 continue;
             };
 
@@ -135,6 +158,30 @@ impl Compositor for CpuCompositor {
     }
 }
 
+/// The crop as an output pixel rectangle, exclusive on the far edges.
+///
+/// None when it uncovers nothing - which happens on the first frame of a wipe,
+/// and is a layer to skip rather than an empty loop to run.
+pub(crate) fn crop_bounds(crop: Crop, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
+    let edge = |value: f32, span: u32| (value.clamp(0.0, 1.0) * span as f32).round() as u32;
+    let left = edge(crop.left, width);
+    let top = edge(crop.top, height);
+    let right = edge(crop.right, width);
+    let bottom = edge(crop.bottom, height);
+    (left < right && top < bottom).then_some((left, top, right, bottom))
+}
+
+/// Trims one axis of a straight blit to a crop edge.
+///
+/// The source origin travels with the destination: cutting pixels off the left
+/// of where a layer lands means starting that many pixels further into it, or
+/// the picture would slide instead of being covered.
+fn trim(dst: u32, src: u32, count: u32, low: u32, high: u32) -> Option<(u32, u32, u32)> {
+    let start = dst.max(low);
+    let end = (dst + count).min(high);
+    (start < end).then(|| (start, src + (start - dst), end - start))
+}
+
 /// Draws one layer through its placement: inverse-mapped, bilinearly sampled.
 ///
 /// Each covered output pixel is carried backwards through the placement into
@@ -142,7 +189,12 @@ impl Compositor for CpuCompositor {
 /// result hole-free at any scale or angle; bilinear is the cheapest filter
 /// that does not shimmer on motion. Only the transformed bounding box is
 /// visited, so a small layer stays cheap on a large frame.
-fn blend_transformed(output: &mut Frame, layer: &Layer<'_>, opacity: f32) {
+fn blend_transformed(
+    output: &mut Frame,
+    layer: &Layer<'_>,
+    opacity: f32,
+    crop: (u32, u32, u32, u32),
+) {
     let source = layer.frame;
     let placement = layer.placement;
     let scale = placement.scale.max(1e-6);
@@ -160,10 +212,12 @@ fn blend_transformed(output: &mut Frame, layer: &Layer<'_>, opacity: f32) {
     let reach_x = (half_w * cos.abs()) + (half_h * sin.abs());
     let reach_y = (half_w * sin.abs()) + (half_h * cos.abs());
 
-    let x_from = ((centre_x - reach_x).floor().max(0.0)) as u32;
-    let y_from = ((centre_y - reach_y).floor().max(0.0)) as u32;
-    let x_to = ((centre_x + reach_x).ceil().min(output.width() as f32)) as u32;
-    let y_to = ((centre_y + reach_y).ceil().min(output.height() as f32)) as u32;
+    // The visited box is the transformed rectangle *and* the crop: the
+    // cheapest place to honour a wipe is by never visiting what it hides.
+    let x_from = (((centre_x - reach_x).floor().max(0.0)) as u32).max(crop.0);
+    let y_from = (((centre_y - reach_y).floor().max(0.0)) as u32).max(crop.1);
+    let x_to = (((centre_x + reach_x).ceil().min(output.width() as f32)) as u32).min(crop.2);
+    let y_to = (((centre_y + reach_y).ceil().min(output.height() as f32)) as u32).min(crop.3);
     if x_from >= x_to || y_from >= y_to {
         return;
     }
@@ -405,4 +459,65 @@ mod tests {
         assert_eq!(overlap(4, 4, 4), None);
         assert_eq!(overlap(-4, 4, 4), None);
     }
+
+    #[test]
+    fn a_crop_paints_only_its_side_of_the_frame() {
+        // The whole of a wipe, in one assertion: the layer covers the frame
+        // and the crop is what decides where it shows.
+        let red = solid(4, 4, [255, 0, 0, 255]);
+        let cropped = Layer::new(&red).with_crop(Crop { right: 0.5, ..Crop::FULL });
+        let frame = CpuCompositor.composite(4, 4, &[cropped]);
+
+        assert_eq!(frame.pixel(0, 2), Some([255, 0, 0, 255]), "inside the crop");
+        assert_eq!(frame.pixel(1, 2), Some([255, 0, 0, 255]));
+        assert_eq!(frame.pixel(2, 2), Some([0, 0, 0, 255]), "outside it, the black beneath");
+        assert_eq!(frame.pixel(3, 2), Some([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn a_crop_covers_rather_than_slides() {
+        // The distinction that makes a wipe a wipe: the picture behind the
+        // edge must not move as the edge does. Cropping the *source* would
+        // shift it left; cropping the output leaves it where it is.
+        let mut striped = Frame::transparent(4, 1);
+        for x in 0..4u32 {
+            striped.set_pixel(x, 0, [(x as u8 + 1) * 60, 0, 0, 255]);
+        }
+        let full = CpuCompositor.composite(4, 1, &[Layer::new(&striped)]);
+        let half = CpuCompositor.composite(
+            4,
+            1,
+            &[Layer::new(&striped).with_crop(Crop { right: 0.5, ..Crop::FULL })],
+        );
+
+        assert_eq!(half.pixel(0, 0), full.pixel(0, 0));
+        assert_eq!(half.pixel(1, 0), full.pixel(1, 0), "the same pixels, not shifted ones");
+        assert_eq!(half.pixel(2, 0), Some([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn a_crop_that_uncovers_nothing_draws_nothing() {
+        // The first frame of every wipe. Skipped, not looped over emptily.
+        let red = solid(4, 4, [255, 0, 0, 255]);
+        let none = Layer::new(&red).with_crop(Crop { right: 0.0, ..Crop::FULL });
+        let frame = CpuCompositor.composite(4, 4, &[none]);
+        assert_eq!(frame.pixel(0, 0), Some([0, 0, 0, 255]));
+        assert_eq!(frame.pixel(3, 3), Some([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn a_crop_applies_to_a_transformed_layer_too() {
+        // The two draw paths are separate code; a wipe over a clip the user
+        // has scaled must still be a wipe.
+        let red = solid(4, 4, [255, 0, 0, 255]);
+        let placement = Placement { scale: 2.0, ..Placement::IDENTITY };
+        let layer = Layer::new(&red)
+            .with_placement(placement)
+            .with_crop(Crop { right: 0.5, ..Crop::FULL });
+        let frame = CpuCompositor.composite(4, 4, &[layer]);
+
+        assert_eq!(frame.pixel(0, 2), Some([255, 0, 0, 255]));
+        assert_eq!(frame.pixel(3, 2), Some([0, 0, 0, 255]), "the crop still bites");
+    }
+
 }

@@ -78,6 +78,12 @@ pub fn flatten_timeline(project: &Project, timeline_id: Option<&str>) -> Vec<Exp
                     duration: transition.duration,
                 }),
                 video_fade_in: 0.0,
+                // All four are filled in by `resolve_transitions`; the
+                // flattener only says what the document holds.
+                video_motion_in: String::new(),
+                video_motion_in_duration: 0.0,
+                video_motion_out: String::new(),
+                video_motion_out_duration: 0.0,
                 media_width: media.width,
                 media_height: media.height,
                 has_audio: Some(media.has_audio),

@@ -6,6 +6,11 @@ behaviour.
 
 ## Unreleased
 
+- The transitions that moved are no longer promises. Wipe, push and zoom
+  work, and there are four more alongside them: wipe up, wipe down, push up
+  and zoom in. Eleven in total, all of them rendered by the engine, so what
+  the monitor shows when the playhead settles is what the export writes.
+
 - Every slider has a reset button. Resetting one was already possible by
   double-clicking its name, which is a thing you have to be told; the button
   is the same action where it can be seen.

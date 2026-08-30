@@ -78,6 +78,11 @@ fn media_clip(path: &Path, kind: &str, start: f64, duration: f64, track: usize) 
         video_filter_chain: String::new(),
         transition: None,
         video_fade_in: 0.0,
+        // Transition motion is set by resolve_transitions, never here.
+        video_motion_in: String::new(),
+        video_motion_in_duration: 0.0,
+        video_motion_out: String::new(),
+        video_motion_out_duration: 0.0,
         media_width: Some(320),
         media_height: Some(180),
         // Deliberately absent: this suite exists to exercise the probe

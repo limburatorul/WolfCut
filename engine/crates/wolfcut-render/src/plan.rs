@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use wolfcut_core::time::Rational;
-use wolfcut_core::timeline::{ClipId, Timeline, TrackKind, Transform};
+use wolfcut_core::timeline::{ClipId, Crop, Timeline, TrackKind, Transform};
 
 /// One visible layer at one instant.
 #[derive(Clone, PartialEq, Debug)]
@@ -30,6 +30,8 @@ pub struct PlannedLayer {
     pub opacity: f32,
     /// The clip's placement in the frame, resolution-independent.
     pub transform: Transform,
+    /// The part of the frame this layer may paint. Full except mid-wipe.
+    pub crop: Crop,
 }
 
 /// Everything needed to draw one output frame.
@@ -74,6 +76,11 @@ pub fn plan_frame(timeline: &Timeline, time: Rational) -> FramePlan {
             continue;
         };
 
+        // A transition that moves resolves here, next to the fade, for the
+        // same reason: the compositor is handed a placement and a crop and is
+        // never told that either came from a transition.
+        let (transform, crop) = clip.motion_at(time);
+
         layers.push(PlannedLayer {
             clip: clip_id,
             media: clip.media.path.clone(),
@@ -82,7 +89,8 @@ pub fn plan_frame(timeline: &Timeline, time: Rational) -> FramePlan {
             // The fade ramp multiplies in here, so the compositor only ever
             // sees a per-frame opacity - it has no idea fades exist.
             opacity: (clip.opacity * clip.video_fade_factor(time)).clamp(0.0, 1.0),
-            transform: clip.transform,
+            transform,
+            crop,
         });
     }
 

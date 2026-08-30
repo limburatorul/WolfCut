@@ -80,6 +80,139 @@ pub struct Clip {
     pub video_fade_out: Rational,
     /// How the picture sits in the frame. Identity is fitted and centred.
     pub transform: Transform,
+    /// How the picture arrives, over `motion_in_duration` from the clip's
+    /// start. [`Motion::None`] is the ordinary case: it appears.
+    pub motion_in: Motion,
+    /// Seconds the arrival takes. Zero means none, like the fades.
+    pub motion_in_duration: Rational,
+    /// How the picture leaves, over `motion_out_duration` into its end.
+    ///
+    /// Only a push needs this - the outgoing half of the cut slides away while
+    /// the incoming half slides in. A wipe or a zoom leaves the picture
+    /// underneath alone and simply covers it.
+    pub motion_out: Motion,
+    /// Seconds the departure takes.
+    pub motion_out_duration: Rational,
+}
+
+/// The part of the output frame a layer may paint, as fractions of the frame.
+///
+/// In *output* space rather than source space, because that is what a wipe
+/// actually is: a hard edge sweeping across the screen, with the picture
+/// standing still behind it. Cropping the source would slide the picture
+/// instead, which is a different transition.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Crop {
+    /// Left edge, 0 at the frame's left.
+    pub left: f32,
+    /// Top edge, 0 at the frame's top.
+    pub top: f32,
+    /// Right edge, 1 at the frame's right.
+    pub right: f32,
+    /// Bottom edge, 1 at the frame's bottom.
+    pub bottom: f32,
+}
+
+impl Crop {
+    /// The whole frame: what every layer gets unless a wipe says otherwise.
+    pub const FULL: Crop = Crop { left: 0.0, top: 0.0, right: 1.0, bottom: 1.0 };
+
+    /// True when this crop hides nothing, so a compositor can skip the test.
+    pub fn is_full(&self) -> bool {
+        *self == Self::FULL
+    }
+}
+
+/// How a clip arrives over, or departs from, the cut it shares with another.
+///
+/// The opacity ramp (`video_fade_in`) is what a dissolve is made of; this is
+/// what everything that *moves* is made of. It lives on the clip and is
+/// evaluated per frame for exactly the reason the fade is: one definition that
+/// every renderer has to agree with, and a compositor that never learns
+/// transitions exist.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum Motion {
+    /// Nothing; the picture is simply there.
+    #[default]
+    None,
+    /// Travels in from `dx` frame-widths and `dy` frame-heights away.
+    Slide {
+        /// Horizontal displacement at the start, in frame widths.
+        dx: f64,
+        /// Vertical displacement at the start, in frame heights.
+        dy: f64,
+    },
+    /// Grows from `from` times its settled size. Above one, it shrinks in.
+    Zoom {
+        /// The scale multiplier the motion begins at.
+        from: f64,
+    },
+    /// A hard edge sweeps across, uncovering the picture as it goes.
+    Wipe {
+        /// Sweeping left-to-right or right-to-left rather than vertically.
+        horizontal: bool,
+        /// Along increasing x (or y) rather than back towards the origin.
+        forward: bool,
+    },
+}
+
+impl Motion {
+    /// The transform and crop partway through an arrival.
+    ///
+    /// `progress` is 0 the instant the clip appears and 1 once the motion is
+    /// spent, so every arm reads as "where it starts" blended towards nothing.
+    pub fn arriving(&self, base: Transform, progress: f64) -> (Transform, Crop) {
+        let remaining = 1.0 - progress.clamp(0.0, 1.0);
+        match *self {
+            Motion::None => (base, Crop::FULL),
+            Motion::Slide { dx, dy } => (
+                Transform {
+                    offset_x: base.offset_x + dx * remaining,
+                    offset_y: base.offset_y + dy * remaining,
+                    ..base
+                },
+                Crop::FULL,
+            ),
+            Motion::Zoom { from } => (
+                Transform { scale: base.scale * (from + (1.0 - from) * progress), ..base },
+                Crop::FULL,
+            ),
+            Motion::Wipe { horizontal, forward } => (base, wipe_crop(horizontal, forward, progress)),
+        }
+    }
+
+    /// The transform and crop partway through a departure.
+    ///
+    /// `progress` runs the other way: 0 where the motion begins and 1 at the
+    /// clip's last frame. Only [`Motion::Slide`] does anything here, because a
+    /// wipe or a zoom covers what is beneath rather than moving it.
+    pub fn leaving(&self, base: Transform, progress: f64) -> (Transform, Crop) {
+        match *self {
+            Motion::Slide { dx, dy } => {
+                let gone = progress.clamp(0.0, 1.0);
+                (
+                    Transform {
+                        offset_x: base.offset_x + dx * gone,
+                        offset_y: base.offset_y + dy * gone,
+                        ..base
+                    },
+                    Crop::FULL,
+                )
+            }
+            _ => (base, Crop::FULL),
+        }
+    }
+}
+
+/// The uncovered rectangle partway through a wipe.
+fn wipe_crop(horizontal: bool, forward: bool, progress: f64) -> Crop {
+    let shown = progress.clamp(0.0, 1.0) as f32;
+    match (horizontal, forward) {
+        (true, true) => Crop { right: shown, ..Crop::FULL },
+        (true, false) => Crop { left: 1.0 - shown, ..Crop::FULL },
+        (false, true) => Crop { bottom: shown, ..Crop::FULL },
+        (false, false) => Crop { top: 1.0 - shown, ..Crop::FULL },
+    }
 }
 
 /// A clip's placement in the output frame.
@@ -130,7 +263,36 @@ impl Clip {
             video_fade_in: Rational::ZERO,
             video_fade_out: Rational::ZERO,
             transform: Transform::IDENTITY,
+            motion_in: Motion::None,
+            motion_in_duration: Rational::ZERO,
+            motion_out: Motion::None,
+            motion_out_duration: Rational::ZERO,
         }
+    }
+
+    /// Where the picture sits, and how much of the frame it may paint, at
+    /// `time`.
+    ///
+    /// The settled transform and the whole frame for a clip with no motion,
+    /// which is nearly all of them - the common case costs two comparisons,
+    /// the same bargain `video_fade_factor` makes.
+    pub fn motion_at(&self, time: Rational) -> (Transform, Crop) {
+        let local = time - self.start;
+
+        if !self.motion_in_duration.is_zero() && local < self.motion_in_duration {
+            let progress = (local / self.motion_in_duration).as_f64();
+            return self.motion_in.arriving(self.transform, progress);
+        }
+
+        let remaining = self.duration - local;
+        if !self.motion_out_duration.is_zero() && remaining < self.motion_out_duration {
+            // Counted from the far end, so a departure reads as "how far gone"
+            // rather than "how much is left".
+            let progress = 1.0 - (remaining / self.motion_out_duration).as_f64();
+            return self.motion_out.leaving(self.transform, progress);
+        }
+
+        (self.transform, Crop::FULL)
     }
 
     /// The opacity ramp factor at `time`, in `0.0..=1.0`.
@@ -488,4 +650,90 @@ mod tests {
         assert_eq!(orphan, None);
         assert_eq!(timeline.clip_count(), 0);
     }
+
+    fn moving(motion_in: Motion, seconds: i64) -> Clip {
+        let mut clip = Clip::new(
+            MediaRef::new("a.mp4"),
+            Rational::ZERO,
+            Rational::from_int(10),
+        );
+        clip.motion_in = motion_in;
+        clip.motion_in_duration = Rational::from_int(seconds);
+        clip
+    }
+
+    #[test]
+    fn a_clip_with_no_motion_is_left_exactly_alone() {
+        // The common case, and the one that must cost nothing: every clip in
+        // a project that uses no motion transitions goes through here.
+        let clip = Clip::new(MediaRef::new("a.mp4"), Rational::ZERO, Rational::from_int(10));
+        let (transform, crop) = clip.motion_at(Rational::from_int(3));
+        assert_eq!(transform, Transform::IDENTITY);
+        assert!(crop.is_full());
+    }
+
+    #[test]
+    fn a_slide_travels_from_its_offset_to_none() {
+        let clip = moving(Motion::Slide { dx: 1.0, dy: 0.0 }, 2);
+        let at = |seconds: i64| clip.motion_at(Rational::from_int(seconds)).0.offset_x;
+
+        assert_eq!(at(0), 1.0, "a whole frame width away at the first instant");
+        assert_eq!(clip.motion_at(Rational::new(1, 1)).0.offset_x, 0.5, "halfway, halfway");
+        assert_eq!(at(2), 0.0, "settled the moment the window closes");
+        assert_eq!(at(6), 0.0, "and stays settled");
+    }
+
+    #[test]
+    fn a_zoom_settles_at_the_clips_own_scale() {
+        // From larger, not smaller: growing from small would show black around
+        // the incoming picture for the whole transition.
+        let clip = moving(Motion::Zoom { from: 2.0 }, 2);
+        assert_eq!(clip.motion_at(Rational::ZERO).0.scale, 2.0);
+        assert_eq!(clip.motion_at(Rational::from_int(1)).0.scale, 1.5);
+        assert_eq!(clip.motion_at(Rational::from_int(2)).0.scale, 1.0);
+    }
+
+    #[test]
+    fn a_zoom_multiplies_the_clips_scale_rather_than_replacing_it() {
+        // A clip the user already scaled must end up where they put it.
+        let mut clip = moving(Motion::Zoom { from: 2.0 }, 2);
+        clip.transform.scale = 0.5;
+        assert_eq!(clip.motion_at(Rational::ZERO).0.scale, 1.0);
+        assert_eq!(clip.motion_at(Rational::from_int(2)).0.scale, 0.5);
+    }
+
+    #[test]
+    fn a_wipe_uncovers_from_the_side_it_says() {
+        let forward = moving(Motion::Wipe { horizontal: true, forward: true }, 2);
+        assert_eq!(forward.motion_at(Rational::ZERO).1.right, 0.0, "nothing at the start");
+        assert_eq!(forward.motion_at(Rational::from_int(1)).1.right, 0.5);
+        assert!(forward.motion_at(Rational::from_int(2)).1.is_full(), "all of it at the end");
+
+        let back = moving(Motion::Wipe { horizontal: true, forward: false }, 2);
+        assert_eq!(back.motion_at(Rational::ZERO).1.left, 1.0);
+        assert_eq!(back.motion_at(Rational::from_int(1)).1.left, 0.5);
+        assert!(back.motion_at(Rational::from_int(2)).1.is_full());
+    }
+
+    #[test]
+    fn a_departure_runs_the_other_way() {
+        // The outgoing half of a push: still where it was when the motion
+        // starts, a whole frame away by the clip's last instant.
+        let mut clip = Clip::new(MediaRef::new("a.mp4"), Rational::ZERO, Rational::from_int(10));
+        clip.motion_out = Motion::Slide { dx: -1.0, dy: 0.0 };
+        clip.motion_out_duration = Rational::from_int(2);
+
+        assert_eq!(clip.motion_at(Rational::from_int(5)).0.offset_x, 0.0, "before it begins");
+        assert_eq!(clip.motion_at(Rational::from_int(8)).0.offset_x, 0.0, "as it begins");
+        assert_eq!(clip.motion_at(Rational::from_int(9)).0.offset_x, -0.5);
+    }
+
+    #[test]
+    fn a_wipe_and_a_zoom_leave_what_is_beneath_alone() {
+        // Only a push moves the picture it is replacing; the others cover it.
+        let base = Transform::IDENTITY;
+        assert_eq!(Motion::Wipe { horizontal: true, forward: true }.leaving(base, 0.5).1, Crop::FULL);
+        assert_eq!(Motion::Zoom { from: 2.0 }.leaving(base, 0.5).0, base);
+    }
+
 }

@@ -224,7 +224,18 @@ Hybrid pipeline in `wolfcut-export`:
   pass.
 - **Transitions are lowered before either path runs** — a cross-fade
   becomes overlapping clips with opacity ramps on doubled track indices,
-  so the compositor never knows transitions exist.
+  so the compositor never knows transitions exist. The ones that *move* use
+  the same overlap and add `Clip::motion_in` / `motion_out`, evaluated per
+  frame in `plan_frame` exactly where the fade ramp is: the compositor is
+  handed a placement and a crop and is still never told why. A push is the
+  only kind that moves the picture it replaces, so it is the only one that
+  sets an outgoing motion; the rest cover what is beneath.
+- **A wipe is a crop of the output, not of the source.** Cropping the source
+  would slide the picture as the edge travelled, which is a different
+  transition. `Crop` is in frame fractions, the CPU compositor trims both of
+  its draw paths to it, and the GPU turns it into a scissor rectangle -
+  borrowing the CPU's own pixel maths so the two cannot disagree about where
+  an edge lands.
 - Filter strings are byte-pinned by tests on **both** sides of the mirror
   (see §6, the chains mirror).
 

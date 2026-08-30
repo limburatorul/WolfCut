@@ -100,6 +100,25 @@ transition?: TransitionSpec | null,
  */
 videoFadeIn?: number, 
 /**
+ * The motion this clip arrives with, named by the transition's own id.
+ * Set by transition resolution below, never by the UI - which says what
+ * it wants at a cut, never how to animate it.
+ */
+videoMotionIn?: string, 
+/**
+ * Seconds that arrival takes.
+ */
+videoMotionInDuration?: number, 
+/**
+ * The motion this clip leaves with. Only a push sets it: it is the one
+ * transition where the outgoing picture moves instead of being covered.
+ */
+videoMotionOut?: string, 
+/**
+ * Seconds that departure takes.
+ */
+videoMotionOutDuration?: number, 
+/**
  * The source's pixel width, when the UI knows it. What makes an
  * aspect-correct decode possible - absent, the frame is filled edge to
  * edge the way it always was.

@@ -36,6 +36,19 @@ struct Vertex {
     opacity: f32,
 }
 
+/// One layer's draw call: which pooled texture, and where it may paint.
+///
+/// A named struct rather than a tuple because the crop made it four things,
+/// and four positional fields at a call site is how the wrong pair gets
+/// swapped.
+struct Draw {
+    width: u32,
+    height: u32,
+    pooled: usize,
+    /// Left, top, right, bottom in output pixels - the scissor rectangle.
+    crop: (u32, u32, u32, u32),
+}
+
 /// Vertex data as raw bytes. `Vertex` is `repr(C)` and all `f32`, so its byte
 /// representation is well-defined; this avoids pulling in bytemuck.
 fn as_bytes(vertices: &[Vertex]) -> &[u8] {
@@ -425,15 +438,28 @@ impl Compositor for WgpuCompositor {
 
         self.used.values_mut().for_each(|used| *used = 0);
 
-        // Upload every visible layer and build its quad.
-        let mut draws: Vec<(u32, u32, usize)> = Vec::with_capacity(layers.len());
+        // Upload every visible layer and build its quad. The crop rides
+        // along as a scissor rectangle - a wipe is exactly what scissoring is
+        // for, and it costs nothing per pixel.
+        let mut draws: Vec<Draw> = Vec::with_capacity(layers.len());
         let mut vertices: Vec<Vertex> = Vec::with_capacity(layers.len() * 6);
         for layer in layers {
             if layer.opacity <= 0.0 {
                 continue;
             }
+            // Borrowed from the CPU compositor so the two cannot disagree
+            // about which pixel a wipe's edge lands on; a crop that uncovers
+            // nothing skips the layer instead of drawing an empty scissor.
+            let Some(crop) = crate::compositor::crop_bounds(layer.crop, width, height) else {
+                continue;
+            };
             let index = self.upload(layer.frame);
-            draws.push((layer.frame.width(), layer.frame.height(), index));
+            draws.push(Draw {
+                width: layer.frame.width(),
+                height: layer.frame.height(),
+                pooled: index,
+                crop,
+            });
             vertices.extend_from_slice(&Self::quad(layer, width, height));
         }
 
@@ -477,11 +503,12 @@ impl Compositor for WgpuCompositor {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
-            for (draw, (layer_width, layer_height, pooled)) in draws.iter().enumerate() {
-                let bind_group =
-                    &self.pool[&(*layer_width, *layer_height)][*pooled].bind_group;
+            for (index, draw) in draws.iter().enumerate() {
+                let bind_group = &self.pool[&(draw.width, draw.height)][draw.pooled].bind_group;
                 pass.set_bind_group(0, bind_group, &[]);
-                let first = (draw * 6) as u32;
+                let (left, top, right, bottom) = draw.crop;
+                pass.set_scissor_rect(left, top, right - left, bottom - top);
+                let first = (index * 6) as u32;
                 pass.draw(first..first + 6, 0..1);
             }
         }

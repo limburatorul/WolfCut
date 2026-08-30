@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Deserialize;
 use wolfcut_core::frame::Frame;
 use wolfcut_core::time::{FrameRate, Rational};
-use wolfcut_core::timeline::{Clip, ClipId, MediaRef, Timeline, Track, TrackKind, Transform};
+use wolfcut_core::timeline::{Clip, ClipId, MediaRef, Motion, Timeline, Track, TrackKind, Transform};
 use wolfcut_media::audio::{self, AudioClip};
 use wolfcut_media::{
     DecodeOptions, EncodeOptions, FfmpegDecoder, FfmpegEncoder, FrameSink, FrameSource,
@@ -129,6 +129,25 @@ pub struct ExportClip {
     #[cfg_attr(feature = "types", ts(as = "Option<f64>", optional))]
     #[serde(default)]
     pub video_fade_in: f64,
+    /// The motion this clip arrives with, named by the transition's own id.
+    /// Set by transition resolution below, never by the UI - which says what
+    /// it wants at a cut, never how to animate it.
+    #[cfg_attr(feature = "types", ts(as = "Option<String>", optional))]
+    #[serde(default)]
+    pub video_motion_in: String,
+    /// Seconds that arrival takes.
+    #[cfg_attr(feature = "types", ts(as = "Option<f64>", optional))]
+    #[serde(default)]
+    pub video_motion_in_duration: f64,
+    /// The motion this clip leaves with. Only a push sets it: it is the one
+    /// transition where the outgoing picture moves instead of being covered.
+    #[cfg_attr(feature = "types", ts(as = "Option<String>", optional))]
+    #[serde(default)]
+    pub video_motion_out: String,
+    /// Seconds that departure takes.
+    #[cfg_attr(feature = "types", ts(as = "Option<f64>", optional))]
+    #[serde(default)]
+    pub video_motion_out_duration: f64,
     /// The source's pixel width, when the UI knows it. What makes an
     /// aspect-correct decode possible - absent, the frame is filled edge to
     /// edge the way it always was.
@@ -302,6 +321,50 @@ fn resolve_transitions(clips: &mut [ExportClip], rate: FrameRate, bake_fades: bo
                 b.fade_in = b.fade_in.max(d);
                 b.track = a_track + 1;
             }
+            "wipe-left" | "wipe-right" | "wipe-up" | "wipe-down" | "push" | "push-up"
+            | "zoom" | "zoom-in" => {
+                // The same overlap a dissolve uses: the incoming clip reaches
+                // back over the outgoing one and plays the handle it has
+                // before its in-point. Only what happens to the picture while
+                // it does differs, so the timing arithmetic is shared.
+                let (a_track, a_duration) = {
+                    let a = &clips[cut.outgoing];
+                    (a.track, a.duration)
+                };
+                let b = &mut clips[cut.incoming];
+
+                let mut d = cut.duration.min(a_duration).min(b.duration);
+                if b.kind != ClipKind::Image {
+                    d = d.min(b.source_start / b.speed.max(0.0625));
+                }
+                if d < frame {
+                    continue;
+                }
+                b.start -= d;
+                b.duration += d;
+                if b.kind != ClipKind::Image {
+                    b.source_start -= d * b.speed;
+                }
+                b.video_motion_in = cut.kind.clone();
+                b.video_motion_in_duration = d;
+                // A zoom dissolves as well as grows. The others do not: a
+                // wipe's whole point is a hard edge, and a push covers what
+                // it displaces exactly, so fading either would only make it
+                // look unsure of itself.
+                if cut.kind.starts_with("zoom") {
+                    b.video_fade_in = d;
+                }
+                // Sound rides the picture, as with a dissolve.
+                b.fade_in = b.fade_in.max(d);
+                b.track = a_track + 1;
+
+                // The half that moves out. Only a push has one.
+                if cut.kind.starts_with("push") {
+                    let a = &mut clips[cut.outgoing];
+                    a.video_motion_out = cut.kind.clone();
+                    a.video_motion_out_duration = d;
+                }
+            }
             "fade-black" | "fade-white" if bake_fades => {
                 // Half the duration on each side of the cut, as fade filters
                 // at decode. Frame-based, because the decoder emits exactly
@@ -335,6 +398,36 @@ fn resolve_transitions(clips: &mut [ExportClip], rate: FrameRate, bake_fades: bo
             // filter must NOT get, because there the user styled the picture.
             _ => {}
         }
+    }
+}
+
+/// The motion a transition id animates, and the geometry it uses.
+///
+/// The only place these numbers live. A slide travels exactly one frame width
+/// so the two halves of a push tile without a seam or an overlap. A zoom
+/// starts *larger* than the frame and settles, rather than growing from small:
+/// growing would show black around the incoming picture for the whole
+/// transition, which is not what anyone means by a zoom.
+fn motion_from_id(id: &str, leaving: bool) -> Motion {
+    // Arriving, the picture comes from the right and travels left to centre;
+    // leaving, it carries on in the same direction and exits left.
+    let direction = if leaving { -1.0 } else { 1.0 };
+    match id {
+        "push" => Motion::Slide { dx: direction, dy: 0.0 },
+        "push-up" => Motion::Slide { dx: 0.0, dy: direction },
+        // Above one it settles inwards, covering the frame throughout. Below
+        // one it grows into place over the outgoing picture, which is showing
+        // around it the whole time - so neither ever exposes black.
+        "zoom" => Motion::Zoom { from: 1.6 },
+        "zoom-in" => Motion::Zoom { from: 0.55 },
+        // Named for the direction the edge travels, not the side it starts
+        // on - which is what the catalogue's own descriptions have always
+        // said: a wipe left sweeps in *from the right*.
+        "wipe-left" => Motion::Wipe { horizontal: true, forward: false },
+        "wipe-right" => Motion::Wipe { horizontal: true, forward: true },
+        "wipe-up" => Motion::Wipe { horizontal: false, forward: false },
+        "wipe-down" => Motion::Wipe { horizontal: false, forward: true },
+        _ => Motion::None,
     }
 }
 
@@ -668,6 +761,13 @@ fn build_timeline(request: &ExportRequest, rate: FrameRate, visible: &[&ExportCl
         // Quantised like every other time: the ramp must land on the same
         // frame grid the overlap does, or the dissolve ends a frame early.
         engine_clip.video_fade_in = quantise(clip.video_fade_in, rate);
+        // Quantised for the same reason the ramp is: the motion has to finish
+        // on the frame the overlap ends, or the last frame of a wipe leaves a
+        // sliver of the outgoing picture showing.
+        engine_clip.motion_in = motion_from_id(&clip.video_motion_in, false);
+        engine_clip.motion_in_duration = quantise(clip.video_motion_in_duration, rate);
+        engine_clip.motion_out = motion_from_id(&clip.video_motion_out, true);
+        engine_clip.motion_out_duration = quantise(clip.video_motion_out_duration, rate);
 
         if let Some(id) = timeline.add_clip(tracks[clip.track], engine_clip) {
             if clip.kind == ClipKind::Image {
@@ -891,6 +991,10 @@ mod tests {
             video_filter_chain: String::new(),
             transition: None,
             video_fade_in: 0.0,
+            video_motion_in: String::new(),
+            video_motion_in_duration: 0.0,
+            video_motion_out: String::new(),
+            video_motion_out_duration: 0.0,
             media_width: None,
             media_height: None,
             has_audio: None,
@@ -1091,4 +1195,52 @@ mod tests {
         assert_eq!(clips[1].start, 2.0);
         assert!(clips[1].video_filter_chain.is_empty());
     }
+
+    #[test]
+    fn a_motion_transition_overlaps_like_a_dissolve_and_names_its_motion() {
+        let mut clips = vec![clip("a", 0, 0.0, 4.0, 0.0), clip("b", 0, 4.0, 4.0, 2.0)];
+        clips[1].transition =
+            Some(TransitionSpec { kind: "wipe-left".to_owned(), duration: 1.0 });
+        resolve_transitions(&mut clips, FrameRate::THIRTY, false);
+
+        let b = &clips[1];
+        assert_eq!(b.start, 3.0, "reaches back over the outgoing clip");
+        assert_eq!(b.duration, 5.0);
+        assert_eq!(b.source_start, 1.0, "and plays the handle it has before its in-point");
+        assert_eq!(b.video_motion_in, "wipe-left");
+        assert_eq!(b.video_motion_in_duration, 1.0);
+        assert_eq!(b.video_fade_in, 0.0, "a wipe has a hard edge, not a fade");
+        assert_eq!(b.track, clips[0].track + 1, "on the lane above");
+    }
+
+    #[test]
+    fn only_a_push_moves_the_clip_it_replaces() {
+        for (kind, expected) in [("push", "push"), ("wipe-left", ""), ("zoom", "")] {
+            let mut clips = vec![clip("a", 0, 0.0, 4.0, 0.0), clip("b", 0, 4.0, 4.0, 2.0)];
+            clips[1].transition =
+                Some(TransitionSpec { kind: kind.to_owned(), duration: 1.0 });
+            resolve_transitions(&mut clips, FrameRate::THIRTY, false);
+            assert_eq!(clips[0].video_motion_out, expected, "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_zoom_dissolves_as_well_as_grows() {
+        // Alone, a zoom that starts larger than the frame would cut in hard at
+        // its first frame. The ramp is what makes it read as a transition.
+        let mut clips = vec![clip("a", 0, 0.0, 4.0, 0.0), clip("b", 0, 4.0, 4.0, 2.0)];
+        clips[1].transition = Some(TransitionSpec { kind: "zoom".to_owned(), duration: 1.0 });
+        resolve_transitions(&mut clips, FrameRate::THIRTY, false);
+        assert_eq!(clips[1].video_fade_in, 1.0);
+    }
+
+    #[test]
+    fn the_two_halves_of_a_push_travel_opposite_ways() {
+        // Or they would tile with a seam, or overlap, instead of pushing.
+        assert_eq!(motion_from_id("push", false), Motion::Slide { dx: 1.0, dy: 0.0 });
+        assert_eq!(motion_from_id("push", true), Motion::Slide { dx: -1.0, dy: 0.0 });
+        assert_eq!(motion_from_id("cross-fade", false), Motion::None);
+        assert_eq!(motion_from_id("", false), Motion::None);
+    }
+
 }
