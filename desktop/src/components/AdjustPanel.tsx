@@ -159,9 +159,9 @@ export function AdjustPanel({
 
       {clip.kind !== "image" && (
         <Group title={t("adjust.speed")} help={t("adjust.speedHelp")}>
-          {/* The engine's full range. The track is linear so the useful
-              0.25-4x band sits left of centre; the number field beside it is
-              how the extremes are actually dialled in. */}
+          {/* The engine's full range, on a ratio track: 1x sits at the
+              centre and each doubling is the same distance either way. The
+              number field beside it is still how the extremes are dialled. */}
           <Slider
             label={t("adjust.rate")}
             value={clip.speed}

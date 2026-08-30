@@ -192,6 +192,12 @@ export function Slider({
           {onReset && (
             <button
               type="button"
+              // A click must not leave the button focused. The window's
+              // shortcuts ignore text fields but not buttons, so a focused
+              // one turns the next keystroke into F-for-fit or space-for-play.
+              // Tab still reaches it, which is the part that matters for
+              // anyone not using a mouse.
+              onMouseDown={(event) => event.preventDefault()}
               onClick={onReset}
               aria-label={t("controls.reset", { label })}
               title={t("controls.reset", { label })}
