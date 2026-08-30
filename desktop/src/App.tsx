@@ -54,6 +54,7 @@ import {
   editorSave,
   engineVersion,
   ensureProxy,
+  onProxyProgress,
   proxyConfigure,
   newMediaFromSummary,
   probeMedia,
@@ -307,9 +308,36 @@ function Editor({
   const assets = useRef(createAssets());
 
   // Media already asked about, so the pass below - which runs on every edit -
-  // does not send an IPC round trip per clip per keystroke. Asking once a
-  // session is enough: a proxy that lands is picked up by the preview itself.
+  // does not send an IPC round trip per clip per keystroke.
   const proxied = useRef(new Set<string>());
+
+  /**
+   * Where each media item's stand-in is, once it has one.
+   *
+   * The engine substitutes proxies for the frame it composites, but that frame
+   * only arrives after the playhead settles. What is on screen *during* a drag
+   * is the monitor's own `<video>`, and until now it read the original - so
+   * the picture the user sees first was still seeking a 4K file. This is what
+   * points it at the small one.
+   */
+  const [proxyPaths, setProxyPaths] = useState<Record<string, string>>({});
+  // Bumped when the workers go quiet, to re-ask for anything that answered
+  // "building" earlier. Without it a stand-in built this session is not used
+  // until the project is reopened.
+  const [proxyRound, setProxyRound] = useState(0);
+
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    void onProxyProgress((progress) => {
+      if (progress.queued === 0 && progress.building === 0) {
+        proxied.current.clear();
+        setProxyRound((round) => round + 1);
+      }
+    }).then((off) => {
+      stop = off;
+    });
+    return () => stop?.();
+  }, []);
 
   // The preview reads stand-ins from the folder the settings remember. Set
   // once per session here, and again by the settings sheet whenever it
@@ -435,17 +463,26 @@ function Editor({
       // and the clip previews from its original until then.
       if (proxyFolder && item.kind === "video" && item.height && !proxied.current.has(item.id)) {
         proxied.current.add(item.id);
-        void ensureProxy(item.path, proxyFolder, proxyHeight, item.height).catch(() => {
-          // A failed ask is not worth a toast: the editor works, only slower.
-          proxied.current.delete(item.id);
-        });
+        const mediaId = item.id;
+        void ensureProxy(item.path, proxyFolder, proxyHeight, item.height)
+          .then((answer) => {
+            if (answer.path) {
+              setProxyPaths((current) =>
+                current[mediaId] === answer.path ? current : { ...current, [mediaId]: answer.path! },
+              );
+            }
+          })
+          .catch(() => {
+            // A failed ask is not worth a toast: the editor works, only slower.
+            proxied.current.delete(mediaId);
+          });
       }
     }
     // Removing media from the bin has to release its artwork too, or a long
     // session's GPU-side filmstrips pile up for the whole run. This pass
     // already knows the surviving ids, so the sweep rides along with it.
     releaseAssets(assets.current, new Set(project.media.map((item) => item.id)));
-  }, [loaded, project.media, timeline.clips, session.path]);
+  }, [loaded, project.media, timeline.clips, session.path, proxyRound]);
 
   // Files dropped from the OS.
   useEffect(() => {
@@ -1091,18 +1128,25 @@ function Editor({
     [project, timeline, playhead],
   );
 
-  const previewSource = useMemo(
-    () => previewSourceAt(project, timeline, playhead),
-    [project, timeline, playhead],
-  );
+  const previewSource = useMemo(() => {
+    const source = previewSourceAt(project, timeline, playhead);
+    if (!source || source.isStill) return source;
+    const clip = findClip(project, source.clipId);
+    const proxy = clip ? proxyPaths[clip.mediaId] : undefined;
+    return proxy ? { ...source, path: proxy } : source;
+  }, [project, timeline, playhead, proxyPaths]);
 
   const previewClip = previewSource ? findClip(project, previewSource.clipId) : null;
   const previewMedia = previewClip ? findMedia(project, previewClip.mediaId) : null;
 
-  const previewGhost = useMemo(
-    () => previewGhostAt(project, timeline, playhead),
-    [project, timeline, playhead],
-  );
+  // The outgoing side of a transition, on the same terms as the source above.
+  const previewGhost = useMemo(() => {
+    const ghost = previewGhostAt(project, timeline, playhead);
+    if (!ghost) return ghost;
+    const clip = findClip(project, ghost.clipId);
+    const proxy = clip ? proxyPaths[clip.mediaId] : undefined;
+    return proxy ? { ...ghost, path: proxy } : ghost;
+  }, [project, timeline, playhead, proxyPaths]);
 
   const previewVeil = useMemo(
     () => previewVeilAt(project, timeline, playhead),

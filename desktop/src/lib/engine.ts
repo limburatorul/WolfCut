@@ -130,6 +130,12 @@ export async function detectSilence(
 /** What `ensureProxy` decided about one file. */
 export type ProxyStatus = "ready" | "building" | "skipped";
 
+/** The decision, plus where the stand-in is once it exists. */
+export interface ProxyAnswer {
+  status: ProxyStatus;
+  path?: string;
+}
+
 /** How the proxy workers are getting on. */
 export interface ProxyProgress {
   queued: number;
@@ -158,8 +164,8 @@ export async function ensureProxy(
   directory: string,
   height: number,
   sourceHeight: number,
-): Promise<ProxyStatus> {
-  return invoke<ProxyStatus>("ensure_proxy", { path, directory, height, sourceHeight });
+): Promise<ProxyAnswer> {
+  return invoke<ProxyAnswer>("ensure_proxy", { path, directory, height, sourceHeight });
 }
 
 /** Bytes of proxies in a folder. Counts only files this app wrote. */

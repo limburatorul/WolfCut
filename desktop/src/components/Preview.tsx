@@ -322,7 +322,17 @@ export function Preview({
   const { t } = useLocale();
   const video = useRef<HTMLVideoElement>(null);
   const still = useRef<HTMLImageElement>(null);
-  const loadedClip = useRef<string | null>(null);
+  /**
+   * The file currently in the video element, by path rather than by clip.
+   *
+   * A clip's path is not fixed: when a proxy finishes building, the same clip
+   * starts pointing at the stand-in instead of the original. Keyed by clip id,
+   * this guard would have decided nothing had changed and left the element on
+   * the big file for as long as the clip stayed on screen. Keying on the path
+   * also means two clips cut from one file share the loaded element instead of
+   * reloading it between them.
+   */
+  const loadedPath = useRef<string | null>(null);
 
   // The picture's true pixel size, measured off the element once it has
   // decoded. The probe's numbers are the *coded* size, which lies for rotated
@@ -423,21 +433,21 @@ export function Preview({
   useEffect(() => {
     const element = video.current;
     if (!element) {
-      loadedClip.current = null;
+      loadedPath.current = null;
       return;
     }
 
     // A still never goes near the video element - it is rendered as an <img>
     // below - so release whatever the element was holding.
     if (!source || source.isStill) {
-      loadedClip.current = null;
+      loadedPath.current = null;
       element.removeAttribute("src");
       element.load();
       return;
     }
 
-    if (loadedClip.current !== source.clipId) {
-      loadedClip.current = source.clipId;
+    if (loadedPath.current !== source.path) {
+      loadedPath.current = source.path;
       element.src = convertFileSrc(source.path);
       element.load();
     }

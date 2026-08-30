@@ -69,6 +69,19 @@ fn held(shared: &Shared) -> MutexGuard<'_, Pending> {
     shared.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Lets the webview read one proxy.
+///
+/// The asset scope starts empty and grows only where the user expresses
+/// intent - importing media, opening a project that lists it. A proxy is this
+/// app's own file, derived from an original that already passed that test, so
+/// granting it adds no reach the window did not already have. It is needed
+/// because the monitor's `<video>` reads through the asset protocol, and
+/// leaving it on the original would keep dragging slow for the picture the
+/// user sees first.
+fn grant(app: &tauri::AppHandle, path: &std::path::Path) {
+    crate::grant_asset(app, &path.to_string_lossy());
+}
+
 fn announce(app: &tauri::AppHandle, pending: &Pending) {
     let _ = app.emit(
         "proxies",
@@ -129,7 +142,10 @@ fn run(shared: &Shared, app: &tauri::AppHandle) {
         pending.building -= 1;
         pending.claimed.remove(&job.source);
         match outcome {
-            Ok(()) => pending.built += 1,
+            Ok(()) => {
+                pending.built += 1;
+                grant(app, &job.destination);
+            }
             Err(error) => {
                 pending.failed += 1;
                 // Counted, not toasted. A folder of unreadable files would
@@ -164,10 +180,24 @@ pub fn proxy_configure(
 pub enum ProxyStatus {
     /// Already built; the preview is already using it.
     Ready,
-    /// Queued, or being built now.
+    /// Queued, or being built now. Worth asking again once the workers go
+    /// quiet - that is when the path arrives.
     Building,
-    /// Not worth one: the source is no taller than the proxy would be.
+    /// Not worth one: the source is no taller than the proxy would be. Never
+    /// worth asking about again.
     Skipped,
+}
+
+/// What the window gets back: the decision, and the file when there is one.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyAnswer {
+    status: ProxyStatus,
+    /// Where the stand-in is, once it exists. The window points its own
+    /// `<video>` at this, which is the half of the preview the engine's
+    /// substitution cannot reach.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
 }
 
 /// Makes sure a stand-in exists for one file, building it if it does not.
@@ -184,25 +214,28 @@ pub fn ensure_proxy(
     directory: String,
     height: u32,
     source_height: u32,
-) -> ProxyStatus {
+) -> ProxyAnswer {
     if !wolfcut_media::proxy::worth_proxying(source_height, height) {
-        return ProxyStatus::Skipped;
+        return ProxyAnswer { status: ProxyStatus::Skipped, path: None };
     }
     let source = PathBuf::from(&path);
     let destination = wolfcut_media::proxy::path_in(std::path::Path::new(&directory), &source, height);
     if destination.is_file() {
-        return ProxyStatus::Ready;
+        grant(&app, &destination);
+        return ProxyAnswer {
+            status: ProxyStatus::Ready,
+            path: Some(destination.to_string_lossy().into_owned()),
+        };
     }
 
     let mut pending = held(&state.0);
-    if !pending.claimed.insert(source.clone()) {
-        return ProxyStatus::Building;
+    if pending.claimed.insert(source.clone()) {
+        pending.queue.push_back(Job { source, destination, height });
+        announce(&app, &pending);
+        drop(pending);
+        state.0.wake.notify_one();
     }
-    pending.queue.push_back(Job { source, destination, height });
-    announce(&app, &pending);
-    drop(pending);
-    state.0.wake.notify_one();
-    ProxyStatus::Building
+    ProxyAnswer { status: ProxyStatus::Building, path: None }
 }
 
 /// How many bytes of proxies are sitting in `directory`.
