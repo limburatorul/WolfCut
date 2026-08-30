@@ -117,6 +117,18 @@
   /* The lime's translucent fill, for slider tracks and control fills. */
   --color-tool-active-soft: rgba(101, 163, 13, 0.18);
 
+  /*
+   * The side panels' own accent: slider knobs, slider fills, switches.
+   *
+   * The same lime as the toolbar's out of the box, so the app reads as one
+   * thing, but a separate pair because Settings can repaint it. Kept apart
+   * from --color-tool-active on purpose: a chosen colour should follow the
+   * controls someone is dragging, not silently restyle the toolbar and the
+   * timeline as well.
+   */
+  --color-slider: #65a30d;
+  --color-slider-soft: rgba(101, 163, 13, 0.18);
+
   --color-playhead: #ff3b30;
   /*
    * One hue per media kind, in two intensities: a vivid mark and a pale
@@ -204,6 +216,9 @@
   --color-tool-active: #c6f432;
   --color-tool-active-bg: rgba(0, 0, 0, 0.32);
   --color-tool-active-soft: rgba(198, 244, 50, 0.16);
+
+  --color-slider: #c6f432;
+  --color-slider-soft: rgba(198, 244, 50, 0.16);
 
   --color-danger: #ff453a;
   --color-danger-soft: rgba(255, 69, 58, 0.14);

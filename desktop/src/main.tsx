@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { App } from "./App";
+import { applyControlColor } from "./lib/settings";
 import "./styles.css";
 
 /*
@@ -19,6 +20,11 @@ document.addEventListener("contextmenu", (event) => {
   if (target?.closest("input, textarea, [contenteditable='true'], .selectable")) return;
   event.preventDefault();
 });
+
+// The remembered control accent, painted before the first render rather
+// than after it: a slider that flashes the theme colour on the way in looks
+// like the setting failing.
+applyControlColor();
 
 const root = document.getElementById("root");
 if (!root) {

@@ -6,6 +6,18 @@ behaviour.
 
 ## Unreleased
 
+- Scale and speed sliders are usable. Both run over multiplying ranges - a
+  sixteenth of speed to sixteen times it - and both were laid out evenly, so
+  normal speed sat six per cent along the track and every setting anyone
+  actually wants was crammed into a few pixels. They are spaced by proportion
+  now: 1x is the middle, and each doubling is the same distance in either
+  direction.
+- The rotation slider stays where it is put. Dragging it to the far left
+  landed on -180, which the model stores as +180, and the knob jumped the
+  whole width of the track.
+- Settings can repaint the sliders and switches in the side panels. The
+  track's tint follows whatever colour is picked.
+
 - Export can hand the encoding to a graphics card. The picker in the export
   sheet lists only what the machine can actually do - probed by encoding a
   frame with each, not by asking FFmpeg what it was built with - and offers

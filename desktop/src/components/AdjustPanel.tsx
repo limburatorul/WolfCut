@@ -85,6 +85,7 @@ export function AdjustPanel({
             min={MIN_SCALE}
             max={MAX_SCALE}
             step={0.01}
+            curve="ratio"
             format={(value) => `${Math.round(value * 100)}%`}
             onReset={() => { onChange({ scale: 1 }); onCommit(); }}
             onChange={(scale) => onChange({ scale })}
@@ -115,7 +116,10 @@ export function AdjustPanel({
           <Slider
             label={t("adjust.rotation")}
             value={clip.rotation}
-            min={-180}
+            // Not -180: the model wraps into (-180, 180], so a knob dragged
+            // to exactly -180 came back as +180 and jumped the full width of
+            // the track. -179 is the lowest value that stays where it is put.
+            min={-179}
             max={180}
             step={1}
             format={(value) => `${Math.round(value)}°`}
@@ -163,7 +167,8 @@ export function AdjustPanel({
             value={clip.speed}
             min={0.0625}
             max={16}
-            step={0.05}
+            step={0.01}
+            curve="ratio"
             format={(value) => `${value.toFixed(2)}x`}
             onReset={() => { onSpeedChange(1); onCommit(); }}
             onChange={onSpeedChange}

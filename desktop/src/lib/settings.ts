@@ -30,6 +30,62 @@ export function setTranscriberLanguage(code: string): void {
   localStorage.setItem(LANGUAGE_KEY, code);
 }
 
+const CONTROL_COLOR_KEY = "wolfcut.controls.color";
+
+/**
+ * Only `#rrggbb` is accepted.
+ *
+ * This value is written straight into a CSS custom property, so it is
+ * untrusted input in the one sense that matters: anything else in there is
+ * either a rule nobody asked for or a control that renders invisibly. A
+ * rejected value reads as "no choice made", which is the theme's own colour.
+ */
+function validColor(value: string | null): string | null {
+  return value !== null && /^#[0-9a-f]{6}$/i.test(value) ? value : null;
+}
+
+/** The chosen accent for panel sliders and switches, or null for the theme's. */
+export function getControlColor(): string | null {
+  return validColor(localStorage.getItem(CONTROL_COLOR_KEY));
+}
+
+/**
+ * Paints the chosen accent onto the document, or takes it back off.
+ *
+ * An inline property on the root beats the stylesheet's own, so this needs no
+ * cooperation from the theme and survives switching between light and dark.
+ * The translucent fill is derived rather than asked for: one colour is one
+ * decision, and a fill that did not match its knob could only ever be a
+ * mistake.
+ */
+export function applyControlColor(): void {
+  const root = document.documentElement;
+  const color = getControlColor();
+  if (color === null) {
+    root.style.removeProperty("--color-slider");
+    root.style.removeProperty("--color-slider-soft");
+    return;
+  }
+  root.style.setProperty("--color-slider", color);
+  root.style.setProperty("--color-slider-soft", `color-mix(in srgb, ${color} 18%, transparent)`);
+}
+
+export function setControlColor(color: string | null): void {
+  if (color === null || validColor(color) === null) localStorage.removeItem(CONTROL_COLOR_KEY);
+  else localStorage.setItem(CONTROL_COLOR_KEY, color);
+  applyControlColor();
+}
+
+/** The accent actually in force, for a colour input to open on. */
+export function currentControlColor(): string {
+  const chosen = getControlColor();
+  if (chosen !== null) return chosen;
+  const painted = getComputedStyle(document.documentElement)
+    .getPropertyValue("--color-slider")
+    .trim();
+  return validColor(painted) ?? "#65a30d";
+}
+
 const PROXY_DIRECTORY_KEY = "wolfcut.proxy.directory";
 const PROXY_HEIGHT_KEY = "wolfcut.proxy.height";
 const PROXY_ENABLED_KEY = "wolfcut.proxy.enabled";

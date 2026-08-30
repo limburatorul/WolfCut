@@ -70,6 +70,7 @@ export function Slider({
   min,
   max,
   step = 0.01,
+  curve = "linear",
   format,
   onChange,
   onCommit,
@@ -80,6 +81,19 @@ export function Slider({
   min: number;
   max: number;
   step?: number;
+  /**
+   * How the track maps onto values.
+   *
+   * `linear` spaces them evenly, which is what a position or an opacity wants.
+   * `ratio` spaces them by proportion, which is what anything multiplicative
+   * wants. On a linear track from 1/16x to 16x, normal speed sits at six per
+   * cent of the width and the whole range anyone uses is a few pixels wide, so
+   * landing on 1x exactly is luck rather than aim. On a ratio track 1x is the
+   * middle, and equal distances mean equal factors in either direction.
+   *
+   * Needs a positive minimum: a ratio has no meaning across zero.
+   */
+  curve?: "linear" | "ratio";
   /** Turns the raw value into what the reader sees. */
   format: (value: number) => string;
   onChange: (value: number) => void;
@@ -101,6 +115,23 @@ export function Slider({
   // the value; the project is not touched until the entry commits.
   const [typing, setTyping] = useState<string | null>(null);
 
+  // A ratio track needs a positive minimum; anything else falls back to
+  // linear rather than producing NaN across zero.
+  const ratio = curve === "ratio" && min > 0 && max > min;
+
+  /** Where a value sits along the track, 0 to 1. */
+  const toFraction = (raw: number) => {
+    if (max === min) return 0;
+    const fraction = ratio
+      ? Math.log(raw / min) / Math.log(max / min)
+      : (raw - min) / (max - min);
+    return Math.min(1, Math.max(0, fraction));
+  };
+
+  /** The value at a point along the track. */
+  const fromFraction = (fraction: number) =>
+    ratio ? min * (max / min) ** fraction : min + fraction * (max - min);
+
   const clampStep = (raw: number) => {
     const stepped = Math.round(raw / step) * step;
     // Re-round, or steps accumulate float noise like 0.30000000000000004.
@@ -112,17 +143,19 @@ export function Slider({
     if (!bounds || bounds.width === 0) return;
 
     if (event.shiftKey) {
-      // Fine mode: the pointer's movement counts for a tenth. Relative to the
+      // Fine mode: the pointer's movement counts for a tenth. Measured along
+      // the track rather than in values, so it follows whichever curve the
+      // slider is on - a tenth of the *distance* either way. Relative to the
       // last position, so toggling shift mid-drag never jumps the value.
-      const delta = ((event.clientX - lastX.current) / bounds.width) * (max - min) * FINE_FACTOR;
+      const travelled = ((event.clientX - lastX.current) / bounds.width) * FINE_FACTOR;
       lastX.current = event.clientX;
-      onChange(clampStep(value + delta));
+      onChange(clampStep(fromFraction(Math.min(1, Math.max(0, toFraction(value) + travelled)))));
       return;
     }
 
     lastX.current = event.clientX;
     const fraction = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
-    onChange(clampStep(min + fraction * (max - min)));
+    onChange(clampStep(fromFraction(fraction)));
   };
 
   const commitTyped = () => {
@@ -133,7 +166,7 @@ export function Slider({
     onCommit?.();
   };
 
-  const fill = max === min ? 0 : Math.min(1, Math.max(0, (value - min) / (max - min)));
+  const fill = toFraction(value);
 
   return (
     <div className="mb-3">
@@ -186,13 +219,13 @@ export function Slider({
                      overflow-hidden rounded-md bg-sunken"
         >
           <div
-            className="absolute inset-y-0 left-0 bg-tool-active-soft"
+            className="absolute inset-y-0 left-0 bg-slider-soft"
             style={{ width: `${fill * 100}%` }}
           />
           {/* The knob subtracts its own width as it travels, so it stays inside
               the track at both ends instead of hanging over the edge. */}
           <div
-            className="absolute top-0 h-full w-1 rounded bg-tool-active"
+            className="absolute top-0 h-full w-1 rounded bg-slider"
             style={{ left: `calc(${fill * 100}% - ${fill * 4}px)` }}
           />
         </div>
@@ -274,7 +307,7 @@ export function Toggle({
         onClick={() => onChange(!checked)}
         className={`relative h-5.5 w-9.5 shrink-0 cursor-pointer rounded-full
                     p-0.75 transition-colors duration-200 ${
-                      checked ? "bg-tool-active" : "bg-tertiary/40"
+                      checked ? "bg-slider" : "bg-tertiary/40"
                     }`}
       >
         <span

@@ -24,6 +24,9 @@ import {
 } from "../lib/engine";
 import { LOCALES, systemLocale, useLocale, type MsgKey } from "../lib/i18n";
 import {
+  applyControlColor,
+  currentControlColor,
+  getControlColor,
   getProxyDirectory,
   getProxyEnabled,
   getProxyHeight,
@@ -34,6 +37,7 @@ import {
   setProxyDirectory,
   setProxyEnabled,
   setProxyHeight,
+  setControlColor,
   setTranscriberLanguage,
   setTranscriberModel,
   setTtsModel,
@@ -172,7 +176,73 @@ function GeneralSettings() {
           {t("settings.general.engineNote")}
         </p>
       </section>
+
+      <ControlColor />
     </div>
+  );
+}
+
+/**
+ * The accent on the side panels' sliders and switches.
+ *
+ * A colour rather than a list of them: the whole point is that it is a taste,
+ * and offering six swatches is only a shorter way of not asking. The
+ * translucent track fill is derived from whatever is picked, so there is one
+ * decision here and not two that could disagree.
+ */
+function ControlColor() {
+  const { t } = useLocale();
+  const [color, setColor] = useState(currentControlColor);
+  const [custom, setCustom] = useState(() => getControlColor() !== null);
+
+  // The theme's own colour differs between light and dark, so a swatch showing
+  // "no choice made" has to follow the theme rather than sit on one value.
+  useEffect(() => {
+    if (!custom) setColor(currentControlColor());
+  }, [custom]);
+
+  const choose = (next: string) => {
+    setControlColor(next);
+    setColor(next);
+    setCustom(true);
+  };
+
+  const reset = () => {
+    setControlColor(null);
+    setCustom(false);
+    applyControlColor();
+    setColor(currentControlColor());
+  };
+
+  return (
+    <section>
+      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+        {t("settings.general.controlColor")}
+      </h3>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          aria-label={t("settings.general.controlColor")}
+          value={color}
+          onChange={(event) => choose(event.target.value)}
+          className="h-8 w-14 cursor-pointer rounded-lg bg-sunken p-1 ring-1 ring-hairline"
+        />
+        <span className="font-technical text-[11px] text-tertiary">{color}</span>
+        {custom && (
+          <button
+            type="button"
+            onClick={reset}
+            className="ml-auto cursor-pointer rounded-md bg-panel px-2.5 py-1 text-[11px]
+                       text-primary ring-1 ring-hairline transition-colors hover:bg-hover"
+          >
+            {t("settings.general.controlColorReset")}
+          </button>
+        )}
+      </div>
+      <p className="mt-2 text-[11px] leading-snug text-tertiary">
+        {t("settings.general.controlColorNote")}
+      </p>
+    </section>
   );
 }
 
