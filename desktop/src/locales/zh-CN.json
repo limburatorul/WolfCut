@@ -29,6 +29,7 @@
   "contextMenu.moveToPlayhead": "移动到播放头",
   "contextMenu.splitClips.one": "在播放头处分割",
   "contextMenu.splitClips.other": "在播放头处分割 {count} 个片段",
+  "controls.reset": "重置{label}",
   "controls.resetHint": "双击重置",
   "controls.sliderValue": "{label} 数值",
   "dialog.addFont.filter": "字体",

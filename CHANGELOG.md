@@ -6,6 +6,10 @@ behaviour.
 
 ## Unreleased
 
+- Every slider has a reset button. Resetting one was already possible by
+  double-clicking its name, which is a thing you have to be told; the button
+  is the same action where it can be seen.
+
 - Scale and speed sliders are usable. Both run over multiplying ranges - a
   sixteenth of speed to sixteen times it - and both were laid out evenly, so
   normal speed sat six per cent along the track and every setting anyone

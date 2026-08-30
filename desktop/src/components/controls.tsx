@@ -170,15 +170,38 @@ export function Slider({
 
   return (
     <div className="mb-3">
-      <div className="mb-1 flex items-baseline justify-between gap-2">
+      <div className="mb-1 flex items-center justify-between gap-2">
         <span
           onDoubleClick={onReset}
           title={onReset ? t("controls.resetHint") : undefined}
-          className={`text-[12px] text-secondary ${onReset ? "cursor-pointer" : ""}`}
+          className={`min-w-0 truncate text-[12px] text-secondary ${
+            onReset ? "cursor-pointer" : ""
+          }`}
         >
           {label}
         </span>
-        <span className="font-technical text-[11px] text-tertiary">{format(value)}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          <span className="font-technical text-[11px] text-tertiary">{format(value)}</span>
+          {/*
+            The reset was there before this, on a double-click of the label,
+            which is a thing you have to be told. The button is the same
+            action where it can be seen. It sits beside the readout rather
+            than in the row below so that the track keeps its full width -
+            these panels are narrow, and the track is what gets dragged.
+          */}
+          {onReset && (
+            <button
+              type="button"
+              onClick={onReset}
+              aria-label={t("controls.reset", { label })}
+              title={t("controls.reset", { label })}
+              className="cursor-pointer rounded p-0.5 text-tertiary transition-colors
+                         hover:bg-hover hover:text-primary"
+            >
+              <Icon name="reset" size={12} />
+            </button>
+          )}
+        </span>
       </div>
 
       <div className="flex items-stretch gap-1.5">

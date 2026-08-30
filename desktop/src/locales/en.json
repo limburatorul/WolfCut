@@ -29,6 +29,7 @@
   "contextMenu.moveToPlayhead": "Move to playhead",
   "contextMenu.splitClips.one": "Split at playhead",
   "contextMenu.splitClips.other": "Split {count} clips at playhead",
+  "controls.reset": "Reset {label}",
   "controls.resetHint": "Double-click to reset",
   "controls.sliderValue": "{label} value",
   "dialog.addFont.filter": "Fonts",

@@ -33,6 +33,7 @@ import {
   Hand,
   Magnet,
   Maximize,
+  RotateCcw,
   Merge,
   MousePointer2,
   Pause,
@@ -275,6 +276,13 @@ const GLYPHS = {
   ),
   moon: <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />,
   check: <path d="m4 12.5 5 5 11-11" />,
+  // An arrow coming back round to where it started.
+  reset: (
+    <>
+      <path d="M4 12a8 8 0 1 0 2.3-5.6" />
+      <path d="M3.5 3.5v4.6h4.6" />
+    </>
+  ),
   copy: (
     <>
       <rect x="9" y="9" width="12" height="12" rx="2" />
@@ -410,6 +418,7 @@ const LUCIDE: Partial<Record<IconName, typeof Play>> = {
   // Two discs blending into one another: the cross-fade itself.
   transition: Blend,
   fit: Maximize,
+  reset: RotateCcw,
 };
 
 export function Icon({
