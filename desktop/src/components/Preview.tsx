@@ -270,8 +270,19 @@ export function Preview({
   onTogglePlay,
   onStep,
   onSeek,
+  onUndecodable,
 }: {
   source: PreviewSource | null;
+  /**
+   * Called with a path the window's own decoder refuses.
+   *
+   * The element handles what a browser handles - MP4 and WebM, H.264 and VP9 -
+   * and that is not what a camera necessarily writes. An NVR's export is
+   * routinely HEVC inside an MPEG program stream, which Chromium cannot open
+   * at all, and until this existed the failure was silent: the element showed
+   * nothing, no one asked why, and the monitor simply went black on play.
+   */
+  onUndecodable: (path: string) => void;
   /** Text clips live at the playhead, bottom-most first. */
   overlays: TextOverlay[];
   playing: boolean;
@@ -541,6 +552,11 @@ export function Preview({
                   ref={video}
                   muted
                   playsInline
+                  // Whatever went wrong - unknown container, unsupported
+                  // codec, a file that vanished - the answer is the same: this
+                  // element is not going to show this file, so say so and let
+                  // the engine's own frames take over.
+                  onError={() => source && !source.isStill && onUndecodable(source.path)}
                   onLoadedMetadata={(event) =>
                     setPictureSize({
                       width: event.currentTarget.videoWidth,

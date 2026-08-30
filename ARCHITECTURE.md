@@ -156,8 +156,15 @@ assumed:
 | 1080p original | 134 ms | 806 ms |
 | 1080p, 540p proxy | 89 ms | 715 ms |
 
-- An **all-intra** proxy seeks no faster than one keyed every 12 frames (90 vs
-  85 ms) and is three times the size. Keyframe distance is not the bottleneck.
+- **Keyframe distance does not matter at all.** All-intra, every 12 frames and
+  every 60 all seek in the same ~174 ms: the spawn dominates so completely that
+  where the decode starts is lost inside it. This module first shipped with
+  `-g 12` on the opposite assumption, and it was simply wrong - on an NVR
+  recording that made an 18.5 MB proxy out of a 3.5 MB original, 4.4x the size
+  of the same clip at `-g 60`, for no speed whatever.
+- Sources that are **already efficient** are the ones to watch. Surveillance
+  HEVC at a megabit and a half can transcode to something larger than itself;
+  the settings are chosen against that footage, not against camera originals.
 - **Hardware decoding** is *slower* for this: 411 ms against 338 for a single
   frame, because initialising the decoder and reading the frame back costs
   more than it saves when you only want one.
@@ -185,6 +192,25 @@ shows the *same moment* as its original, since a cut placed against a preview
 a few frames out of step is wrong everywhere except on screen;
 `tests/proxy_substitution.rs` decodes both at the same timestamps and compares
 pixels.
+
+### 3.2 What the window cannot decode
+
+The monitor shows two pictures. Paused, and whenever two or more visual layers
+overlap, it is the engine's composite. A single layer during playback rides the
+`<video>` element instead, which costs nothing and is perfectly smooth.
+
+That element handles what a browser handles. A camera does not necessarily
+write that: an NVR export is routinely HEVC inside an **MPEG program stream**
+with an `.mp4` extension, and Chromium has no demuxer for it at all. The
+failure was silent - the element showed nothing, nothing asked why, and the
+monitor simply went black the moment you pressed play, while the paused frame
+had looked perfect a second earlier.
+
+`onError` on the element now reports the path, and `useEngineTruth` streams
+from the engine even for a single layer while that path is on screen. FFmpeg
+has no such gap. A proxy fixes it too, from the other direction, by turning the
+file into H.264 in a real MP4 - which is worth knowing, because it means the
+proxy feature is load-bearing for these sources rather than only faster.
 
 ---
 

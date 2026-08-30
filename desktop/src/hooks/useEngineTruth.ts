@@ -47,6 +47,7 @@ export function useEngineTruth({
   frame,
   fps,
   quality,
+  elementBlind,
   latest,
 }: {
   playing: boolean;
@@ -61,6 +62,17 @@ export function useEngineTruth({
   fps: number;
   /** Preview resolution as a fraction of the output frame: 1, 0.5, 0.25. */
   quality: number;
+  /**
+   * True when the window's video element cannot decode what is on screen.
+   *
+   * A single visual layer normally rides the element through playback, which
+   * costs nothing and is perfectly smooth. When the element cannot open the
+   * file at all - HEVC, an MPEG program stream, anything Chromium has no
+   * demuxer for - that path shows black, so the engine has to stream even
+   * though there is only one layer. The engine decodes through FFmpeg and has
+   * no such gap.
+   */
+  elementBlind: boolean;
   /** Live values, read mid-flight without restarting the loops. */
   latest: { current: { playhead: number; frame: { width: number; height: number }; project: EditorProject } };
 }): EngineStill | null {
@@ -121,7 +133,7 @@ export function useEngineTruth({
       let presented = -1;
       while (live) {
         const now = latest.current.playhead;
-        if (visualLayers(now) < 2) {
+        if (!elementBlind && visualLayers(now) < 2) {
           setEngineStill(null);
           presented = -1;
           await wait(120);
@@ -160,7 +172,7 @@ export function useEngineTruth({
     return () => {
       live = false;
     };
-  }, [playing, loaded, latest, fps, quality]);
+  }, [playing, loaded, latest, fps, quality, elementBlind]);
 
   return engineStill;
 }

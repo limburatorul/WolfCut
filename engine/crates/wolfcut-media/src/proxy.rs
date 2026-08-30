@@ -6,6 +6,11 @@
 //! the rest is the decode. A 540p stand-in with dense keyframes brings the same
 //! frame to about 100 ms - 4K then scrubs faster than 1080p originals do.
 //!
+//! Already-efficient sources are the ones to watch. Surveillance HEVC at a
+//! megabit and a half can transcode into something *larger* than what it
+//! stands in for, so the encoder settings below were measured against exactly
+//! that footage rather than against camera originals.
+//!
 //! What a proxy is here: same pictures, same timing, no audio, small. Only the
 //! preview path uses them - [`crate::pool::ReaderPool`] is what substitutes,
 //! and the exporter opens its own decoders on the originals - so a proxy can
@@ -87,10 +92,17 @@ pub fn generate(original: &Path, destination: &Path, height: u32) -> Result<()> 
         // -2 rather than -1: the width has to stay even for yuv420p, and an
         // odd one fails the encode rather than rounding.
         .args(["-vf", &format!("scale=-2:{height}")])
-        // Dense keyframes are the point. Measured, an all-intra proxy seeks no
-        // faster than one keyed every 12 frames, and it is three times the
-        // size - so 12 is where the curve flattens.
-        .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-g", "12"])
+        // Keyframe density turns out not to matter at all, which was a
+        // surprise: seeking a proxy keyed every 60 frames measures the same
+        // 174 ms as one keyed every 12, because the FFmpeg spawn dominates so
+        // completely that where the decode starts is lost in it. Dense keys
+        // were therefore costing 4.4x the size for nothing - a 44-second
+        // surveillance clip made an 18.5 MB proxy out of a 3.5 MB original.
+        //
+        // CRF 28 rather than 23 for the same reason it is a preview and not a
+        // deliverable: at 720p it is indistinguishable at the size the monitor
+        // draws, and it takes that same clip to 2.5 MB.
+        .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-g", "60"])
         .args(["-pix_fmt", "yuv420p"])
         // Named, not inferred. The file being written is a `.partial`, and
         // leaving the muxer to the extension made FFmpeg refuse it outright.

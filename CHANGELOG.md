@@ -6,6 +6,22 @@ behaviour.
 
 ## Unreleased
 
+- Playback no longer goes black for recordings the window cannot decode.
+  A camera writes what it writes, and an NVR export is routinely HEVC in an
+  MPEG program stream that Chromium has no reader for; the paused frame
+  looked right and pressing play emptied the monitor. The engine now takes
+  over the moment the window admits it cannot open a file.
+- Filmstrips for long recordings arrive in seconds rather than a minute and
+  a half. Building one used to walk the whole file to find its two dozen
+  frames - a hundred seconds for a forty-three-minute recording, which just
+  looks broken. Past two minutes of material it now seeks to each frame:
+  six seconds, whatever the length.
+- Proxies are a great deal smaller. They were being keyed every twelve
+  frames on the assumption that dense keyframes seek faster, which measured
+  against a real recording turns out to be worth nothing at all - it was
+  costing four times the size for no speed. A surveillance clip's proxy goes
+  from 18.5 MB to 2.5 MB.
+
 - The timeline has a horizontal scrollbar. Panning time used to be a gesture
   only - shift-wheel, or a trackpad sideways - which left a mouse no way to
   reach the far end of a long edit, and nothing on screen saying how much of

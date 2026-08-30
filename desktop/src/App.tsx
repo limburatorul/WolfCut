@@ -321,6 +321,28 @@ function Editor({
    * points it at the small one.
    */
   const [proxyPaths, setProxyPaths] = useState<Record<string, string>>({});
+
+  /**
+   * Files the window's video element could not open.
+   *
+   * A camera writes what a camera writes: an NVR export is routinely HEVC in
+   * an MPEG program stream, which Chromium has no demuxer for. Paused, the
+   * engine's own composited frame covers it - but playing a single visual
+   * layer normally rides the element, and that showed black with nothing
+   * reporting why. Remembering the path lets the engine stream instead.
+   *
+   * By path rather than by clip: it is the file the decoder refused, and every
+   * clip cut from it will be refused too.
+   */
+  const [undecodable, setUndecodable] = useState<ReadonlySet<string>>(() => new Set());
+  const markUndecodable = useCallback((path: string) => {
+    setUndecodable((current) => {
+      if (current.has(path)) return current;
+      const next = new Set(current);
+      next.add(path);
+      return next;
+    });
+  }, []);
   // Bumped when the workers go quiet, to re-ask for anything that answered
   // "building" earlier. Without it a stand-in built this session is not used
   // until the project is reopened.
@@ -1179,6 +1201,9 @@ function Editor({
     frame,
     fps: session ? session.rateNum / session.rateDen : 30,
     quality: previewQuality,
+    // A proxy that lands turns an unplayable file into a playable one, so this
+    // asks about the path actually on screen rather than the original.
+    elementBlind: previewSource !== null && undecodable.has(previewSource.path),
     latest,
   });
 
@@ -1492,6 +1517,7 @@ function Editor({
               onTogglePlay={transport.toggle}
               onStep={(frames) => transport.step(frames, frameRate)}
               onSeek={transport.seek}
+              onUndecodable={markUndecodable}
             />
           </div>
 

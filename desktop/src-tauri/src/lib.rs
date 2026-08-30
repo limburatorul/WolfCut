@@ -380,6 +380,21 @@ async fn extract_filmstrip(path: String, count: u32, height: u32) -> Result<taur
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// Above this many seconds, the strip is built by seeking rather than by
+/// decoding the recording through.
+///
+/// `fps=count/duration` has to walk every frame to find the two dozen it
+/// keeps. On a forty-three-minute 1440p recording that is a hundred seconds,
+/// and for all of it the timeline draws flat grey clips and looks broken.
+/// Seeking costs one FFmpeg per frame - about a fifth of a second - so the
+/// strip lands in five seconds however long the recording is.
+///
+/// Below the threshold, decoding through is the cheaper of the two: a
+/// forty-second clip decodes in under a second, where twenty-four seeks would
+/// take four. It is also the more faithful, since a seek lands on the keyframe
+/// at or before the mark rather than the mark itself.
+const SEEK_FILMSTRIP_ABOVE: f64 = 120.0;
+
 fn filmstrip(path: &str, count: u32, height: u32) -> Result<Vec<u8>, String> {
     let count = count.clamp(1, 60);
     let height = height.clamp(16, 240);
@@ -390,6 +405,10 @@ fn filmstrip(path: &str, count: u32, height: u32) -> Result<Vec<u8>, String> {
         .map(|duration| duration.as_f64())
         .filter(|seconds| *seconds > 0.0)
         .ok_or_else(|| format!("{path} reports no duration"))?;
+
+    if duration > SEEK_FILMSTRIP_ABOVE {
+        return sought_filmstrip(path, count, height, duration);
+    }
 
     let output = wolfcut_media::command(wolfcut_media::ffmpeg())
         .args(["-hide_banner", "-nostdin", "-loglevel", "error"])
@@ -419,6 +438,88 @@ fn filmstrip(path: &str, count: u32, height: u32) -> Result<Vec<u8>, String> {
 
     Ok(output.stdout)
 }
+
+/// One frame of `path`, grabbed by seeking, as a JPEG.
+///
+/// `-ss` before `-i` is the fast seek: FFmpeg jumps to the nearest keyframe
+/// and decodes forward from there, instead of decoding everything up to the
+/// mark and throwing it away.
+fn sought_frame(path: &str, at: f64, height: u32) -> Vec<u8> {
+    let output = wolfcut_media::command(wolfcut_media::ffmpeg())
+        .args(["-hide_banner", "-nostdin", "-loglevel", "error"])
+        .args(["-ss", &format!("{at:.3}")])
+        .args(["-i", path])
+        .args(["-frames:v", "1"])
+        .args(["-vf", &format!("scale=-2:{height}:flags=lanczos")])
+        .args(["-q:v", "3", "-f", "mjpeg", "pipe:1"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => output.stdout,
+        // A mark that lands past the end, or a frame FFmpeg cannot produce,
+        // is filled in from its neighbours below rather than failing the
+        // strip - one missing thumbnail is not worth a blank timeline.
+        _ => Vec::new(),
+    }
+}
+
+/// The strip for a long recording: one seek per frame, tiled at the end.
+///
+/// Every frame is sampled at the middle of its slice rather than at the start,
+/// so the first thumbnail is not the black frame many recordings open with.
+///
+/// The tile step reads the frames back through `image2pipe` from one temporary
+/// file. A pipe would avoid the file, but writing a hundred kilobytes into a
+/// child's stdin while it writes its own output back is how pipe deadlocks are
+/// made, and this is not a hot path.
+fn sought_filmstrip(path: &str, count: u32, height: u32, duration: f64) -> Result<Vec<u8>, String> {
+    let mut frames: Vec<Vec<u8>> = (0..count)
+        .map(|index| {
+            let at = duration * (f64::from(index) + 0.5) / f64::from(count);
+            sought_frame(path, at, height)
+        })
+        .collect();
+
+    // The window slices the strip into exactly `count` frames, so it has to
+    // get `count` of them. A gap is filled from the closest frame that did
+    // arrive; nothing at all is a real failure.
+    let Some(first) = frames.iter().position(|frame| !frame.is_empty()) else {
+        return Err(format!("ffmpeg produced no filmstrip for {path}"));
+    };
+    for index in 0..frames.len() {
+        if frames[index].is_empty() {
+            let source = if index > first { index - 1 } else { first };
+            frames[index] = frames[source].clone();
+        }
+    }
+
+    let joined = std::env::temp_dir().join(format!(
+        "wolfcut-strip-{}-{}.jpg",
+        std::process::id(),
+        STRIP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ));
+    std::fs::write(&joined, frames.concat())
+        .map_err(|error| format!("could not stage the filmstrip: {error}"))?;
+
+    let output = wolfcut_media::command(wolfcut_media::ffmpeg())
+        .args(["-hide_banner", "-nostdin", "-loglevel", "error"])
+        .args(["-f", "image2pipe"])
+        .arg("-i")
+        .arg(&joined)
+        .args(["-vf", &format!("tile={count}x1")])
+        .args(["-frames:v", "1", "-q:v", "3", "-f", "mjpeg", "pipe:1"])
+        .output();
+    let _ = std::fs::remove_file(&joined);
+
+    let output = output.map_err(|error| format!("could not run ffmpeg: {error}"))?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(format!("ffmpeg produced no filmstrip for {path}"));
+    }
+    Ok(output.stdout)
+}
+
+/// Keeps two strips being built at once from naming the same staging file.
+static STRIP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A small poster frame for one project, for the launch screen's recents.
 ///
