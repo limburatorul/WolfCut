@@ -228,6 +228,48 @@ Hybrid pipeline in `wolfcut-export`:
 - Filter strings are byte-pinned by tests on **both** sides of the mirror
   (see §6, the chains mirror).
 
+### 4.1 Which encoder runs
+
+Export is the one place a graphics card earns its keep, and the reason is that
+the encoder is the bottleneck there. The render loop composites a frame and
+writes it down a pipe; decoding the sources runs at ~750 fps and compositing is
+on the GPU, while the default `libx264 -preset medium` manages 144 fps at 1440p.
+
+Measured on a Ryzen 9 5900X with an RX 9070, encoding 1200 frames of 1440p
+handed over in system memory - which is the shape the exporter actually has,
+since frames arrive from our own compositor rather than from a decoder:
+
+| encoder | throughput | file |
+|---|---|---|
+| `libx264 -preset medium` (default) | 144 fps | 68.0 MB |
+| `libx264 -preset veryfast` | 258 fps | 61.6 MB |
+| `h264_amf -quality quality` | 187 fps | 108.6 MB |
+| `h264_amf -quality speed` | 352 fps | 108.9 MB |
+| `hevc_amf` | 153 fps | 95.8 MB |
+
+So hardware is worth up to 2.4x against the shipped default, and costs
+compression to get it. It stays opt-in: x264 is on every machine, its size is
+predictable, and a render should not depend on which card is fitted.
+
+Two things learned the hard way, both recorded so nobody re-learns them:
+
+- **AMF takes different flags.** `-preset` and `-crf` are not ignored by an AMF
+  encoder, they fail the run outright, so `encode.rs` branches on the encoder
+  name rather than defaulting.
+- **Availability has to be probed, not read.** `ffmpeg -encoders` lists
+  `h264_nvenc` on a machine with no NVIDIA card; believing it means an export
+  that dies partway through. `working_encoders` encodes one frame with each
+  candidate instead. That probe frame is 640x480 on purpose: AMD's H.264 will
+  not open at 64x64 and its HEVC will not open at 320x240, both with the same
+  unhelpful `encoder->Init() failed with error 5`, and a probe below one of
+  those minimums silently reports no hardware on a machine that has it.
+
+**Where hardware does not help.** Decoding was measured too, and it is not the
+same story. For a single preview frame it is *slower* - 411 ms against 338 -
+because initialising the decoder and reading the frame back costs more than it
+saves when only one frame is wanted. Across a sustained transcode it is worth
+about 17%. Neither is a reason to change the scrub path (§3.1).
+
 ---
 
 ## 5. IPC surface (39 commands)

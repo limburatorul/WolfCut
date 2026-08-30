@@ -6,6 +6,14 @@ behaviour.
 
 ## Unreleased
 
+- Export can hand the encoding to a graphics card. The picker in the export
+  sheet lists only what the machine can actually do - probed by encoding a
+  frame with each, not by asking FFmpeg what it was built with - and offers
+  AMD, NVIDIA and Intel encoders where they run. On a Radeon RX 9070 that is
+  about 2.4 times the throughput of the software default. It writes a larger
+  file at the same quality setting, which is the trade; software x264 remains
+  the default and the predictable one.
+
 - Playback no longer goes black for recordings the window cannot decode.
   A camera writes what it writes, and an NVR export is routinely HEVC in an
   MPEG program stream that Chromium has no reader for; the paused frame

@@ -5,12 +5,40 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import type { ExportClip, ExportProgress } from "../lib/engine";
 import type { ExportTitle } from "../lib/monitor";
-import { cancelExport, exportProject, onExportProgress, writeCacheFile } from "../lib/engine";
+import {
+  cancelExport,
+  exportProject,
+  onExportProgress,
+  videoEncoders,
+  writeCacheFile,
+} from "../lib/engine";
 import { useLocale, type MsgKey } from "../lib/i18n";
 import { rasterizeTitle } from "../lib/rasterize";
 import { shortDuration } from "../lib/time";
 import { ErrorNotice } from "./ErrorNotice";
 import { Icon } from "./Icon";
+
+/**
+ * An FFmpeg encoder name as something to read.
+ *
+ * The names are built the same way throughout - `format_backend` - so this
+ * takes them apart rather than keeping a table that would need an entry every
+ * time FFmpeg gains an encoder. An unknown backend still renders as itself,
+ * which beats hiding a working encoder because nobody had named it here.
+ */
+function encoderLabel(id: string, software: string): string {
+  if (id === "libx264") return software;
+  const [format, backend] = id.split("_");
+  const vendors: Record<string, string> = {
+    amf: "AMD",
+    nvenc: "NVIDIA",
+    qsv: "Intel",
+    vaapi: "GPU",
+    videotoolbox: "Apple",
+  };
+  const codecs: Record<string, string> = { h264: "H.264", hevc: "HEVC", av1: "AV1" };
+  return `${vendors[backend] ?? backend} · ${codecs[format] ?? format.toUpperCase()}`;
+}
 
 /** Quality presets, in the terms a person picking one actually thinks in. */
 const QUALITIES: {
@@ -115,6 +143,23 @@ export function ExportDialog({
 }) {
   const [output, setOutput] = useState(`${projectPath}/${projectName}.mp4`);
   const [quality, setQuality] = useState<(typeof QUALITIES)[number]>(QUALITIES[1]);
+  // What this machine can encode with, and which of them is chosen. The probe
+  // costs a couple of seconds on its first run, so it happens while the sheet
+  // is being read rather than when Export is pressed.
+  const [encoders, setEncoders] = useState<string[]>(["libx264"]);
+  const [encoder, setEncoder] = useState("libx264");
+
+  useEffect(() => {
+    let live = true;
+    void videoEncoders()
+      .then((found) => {
+        if (live && found.length > 0) setEncoders(found);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const { t, tp } = useLocale();
   const unlisten = useRef<(() => void) | null>(null);
@@ -170,6 +215,10 @@ export function ExportDialog({
         output,
         crf: quality.crf,
         preset: quality.preset,
+        // Absent means the engine's own default, which is this same x264 -
+        // sending it explicitly would only be a second place for the default
+        // to live.
+        codec: encoder === "libx264" ? undefined : encoder,
         titles: overlays,
       });
       setPhase({ kind: "done", path });
@@ -268,6 +317,33 @@ export function ExportDialog({
                 {t("export.browse")}
               </button>
             </div>
+
+            {encoders.length > 1 && (
+              <>
+                <Label>{t("export.encoder")}</Label>
+                <div className="mb-1.5 flex flex-wrap gap-1.5">
+                  {encoders.map((id) => (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={id === encoder}
+                      onClick={() => setEncoder(id)}
+                      className={`cursor-pointer rounded-lg px-2.5 py-1.5 text-xs
+                                  transition-colors ${
+                                    id === encoder
+                                      ? "bg-accent text-on-accent"
+                                      : "bg-hover text-secondary hover:bg-active"
+                                  }`}
+                    >
+                      {encoderLabel(id, t("export.encoderSoftware"))}
+                    </button>
+                  ))}
+                </div>
+                <p className="mb-5 text-[11px] leading-snug text-tertiary">
+                  {t("export.encoderHint")}
+                </p>
+              </>
+            )}
 
             <Label>{t("export.qualityTitle")}</Label>
             <div className="mb-5 grid grid-cols-3 gap-1.5">

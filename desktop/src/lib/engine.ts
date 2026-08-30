@@ -442,6 +442,12 @@ export interface ExportRequest {
   crf: number;
   preset: string;
   /**
+   * Which encoder to run, as FFmpeg names it. Absent is software x264 - on
+   * every machine, predictable in size, and independent of what card is
+   * fitted. A hardware name trades compression for speed.
+   */
+  codec?: string;
+  /**
    * Rasterised titles, rejoining as image clips. The timeline itself is
    * deliberately absent: the engine flattens its own session (engine
    * decision 0009), so size, rate and clips all come from the model. The
@@ -454,6 +460,17 @@ export interface ExportProgress {
   frame: number;
   total: number;
   stage: string;
+}
+
+/**
+ * Which video encoders this machine can actually run, best-known first.
+ *
+ * Probed rather than listed: FFmpeg advertises encoders for hardware that is
+ * not present, and the export that trusted that fails partway through. The
+ * first call takes a couple of seconds; the host caches it after that.
+ */
+export async function videoEncoders(): Promise<string[]> {
+  return invoke<string[]>("video_encoders");
 }
 
 /** Renders the timeline. Resolves with the path written. */

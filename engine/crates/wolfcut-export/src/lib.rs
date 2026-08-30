@@ -187,6 +187,15 @@ pub struct ExportRequest {
     pub crf: u8,
     /// The x264 speed/size preset name, e.g. "medium".
     pub preset: String,
+    /// Which encoder to run, as FFmpeg names it.
+    ///
+    /// Absent is the software x264 this has always used, and stays the
+    /// default: it is on every machine, its output size is predictable, and
+    /// nothing about a render depends on which GPU is fitted. A hardware name
+    /// like `h264_amf` trades compression for speed, which is a choice worth
+    /// offering and not one worth making for someone.
+    #[serde(default)]
+    pub codec: Option<String>,
     /// The flattened clip list to render.
     pub clips: Vec<ExportClip>,
 }
@@ -506,6 +515,7 @@ fn render_picture(
         &EncodeOptions {
             crf: request.crf,
             preset: request.preset.clone(),
+            codec: request.codec.clone().unwrap_or_else(|| EncodeOptions::default().codec),
             ..EncodeOptions::default()
         },
     )
@@ -799,6 +809,9 @@ fn preview_timeline(request: &PreviewFrameRequest, rate: FrameRate) -> BuiltTime
         rate_den: request.rate_den,
         crf: 18,
         preset: String::new(),
+        // The shim never encodes - build_timeline reads only the output
+        // format off it - so which encoder would have run is not a question.
+        codec: None,
         clips: Vec::new(),
     };
     build_timeline(&shim, rate, &visible)

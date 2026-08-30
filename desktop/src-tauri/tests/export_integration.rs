@@ -95,6 +95,9 @@ fn request(output: &Path, clips: Vec<ExportClip>) -> ExportRequest {
         rate_den: 1,
         crf: 30,
         preset: "ultrafast".to_owned(),
+        // Software, deliberately: this suite asserts what the shipped
+        // default produces, and hardware encoders are absent on most runners.
+        codec: None,
         clips,
     }
 }

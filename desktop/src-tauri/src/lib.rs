@@ -202,6 +202,23 @@ async fn read_media_bytes(path: String) -> Result<tauri::ipc::Response, String> 
     .map(tauri::ipc::Response::new)
 }
 
+/// Which video encoders this machine can actually run, best-known first.
+///
+/// Probed by encoding a frame with each, not by reading FFmpeg's list: a build
+/// advertises `h264_nvenc` whether or not an NVIDIA card is fitted, and the
+/// export that believed it fails halfway through. Two seconds once, cached in
+/// the engine for the life of the process, off the main thread because the
+/// first call pays for all of it.
+#[tauri::command]
+async fn video_encoders() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(|| wolfcut_media::encode::working_encoders().to_vec())
+        .await
+        // A failed probe is not a reason to offer nothing: x264 is in every
+        // build there is, and offering it alone is exactly the behaviour that
+        // preceded this command.
+        .unwrap_or_else(|_| vec!["libx264".to_owned()])
+}
+
 /// Where one file's audio goes quiet.
 ///
 /// One FFmpeg pass over the audio, off the main thread because a long take
@@ -890,6 +907,9 @@ struct ExportSpec {
     crf: u8,
     /// The x264 speed/size preset name, e.g. "medium".
     preset: String,
+    /// Which encoder to run, as FFmpeg names it. Absent is software x264.
+    #[serde(default)]
+    codec: Option<String>,
     /// Rasterised text clips - fonts and layout live in the webview, so
     /// titles arrive as images the flattener cannot produce itself.
     #[serde(default)]
@@ -913,6 +933,7 @@ async fn export_project(
         rate_den: settings.rate_den,
         crf: request.crf,
         preset: request.preset,
+        codec: request.codec,
         clips,
     };
     let job = state.0.begin("export")?;
@@ -1021,6 +1042,7 @@ pub fn run() {
             read_media_bytes,
             extract_peaks,
             detect_silence,
+            video_encoders,
             proxies::proxy_configure,
             proxies::ensure_proxy,
             proxies::proxy_usage,
