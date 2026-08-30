@@ -29,7 +29,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Deserialize;
 use wolfcut_core::frame::Frame;
 use wolfcut_core::time::{FrameRate, Rational};
-use wolfcut_core::timeline::{Clip, ClipId, MediaRef, Motion, Timeline, Track, TrackKind, Transform};
+use wolfcut_core::timeline::{
+    Clip, ClipId, Crop, MediaRef, Motion, Timeline, Track, TrackKind, Transform,
+};
 use wolfcut_media::audio::{self, AudioClip};
 use wolfcut_media::{
     DecodeOptions, EncodeOptions, FfmpegDecoder, FfmpegEncoder, FrameSink, FrameSource,
@@ -556,6 +558,7 @@ fn place_layer<'a>(
     frame: &'a Frame,
     opacity: f32,
     transform: &Transform,
+    crop: Crop,
     width: u32,
     height: u32,
 ) -> Layer<'a> {
@@ -575,6 +578,7 @@ fn place_layer<'a>(
         .at(x as i32, y as i32)
         .with_opacity(opacity)
         .with_placement(placement)
+        .with_crop(crop)
 }
 
 /// The best compositor this machine offers: the GPU when the `gpu` feature is
@@ -629,7 +633,7 @@ fn render_picture(
         let time = rate.time_of_frame(index);
         let plan = plan_frame(&timeline, time);
 
-        let mut sources: Vec<(Frame, f32, Transform)> = Vec::with_capacity(plan.layers.len());
+        let mut sources: Vec<(Frame, f32, Transform, Crop)> = Vec::with_capacity(plan.layers.len());
         for layer in &plan.layers {
             let decoder = match decoders.entry(layer.clip) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -682,14 +686,14 @@ fn render_picture(
             // aborting the export - a clip trimmed past its media's end is a
             // mistake in the edit, not a failure of the renderer.
             if let Some(frame) = decoder.next_frame().map_err(|error| error.to_string())? {
-                sources.push((frame, layer.opacity, layer.transform));
+                sources.push((frame, layer.opacity, layer.transform, layer.crop));
             }
         }
 
         let layers: Vec<Layer<'_>> = sources
             .iter()
-            .map(|(frame, opacity, transform)| {
-                place_layer(frame, *opacity, transform, request.width, request.height)
+            .map(|(frame, opacity, transform, crop)| {
+                place_layer(frame, *opacity, transform, *crop, request.width, request.height)
             })
             .collect();
 
@@ -841,7 +845,7 @@ pub fn preview_frame(
         preview_timeline(request, rate);
     let plan = plan_frame(&timeline, quantise(request.time, rate));
 
-    let mut sources: Vec<(std::sync::Arc<Frame>, f32, Transform)> =
+    let mut sources: Vec<(std::sync::Arc<Frame>, f32, Transform, Crop)> =
         Vec::with_capacity(plan.layers.len());
     let mut failures: Vec<String> = Vec::new();
     for layer in &plan.layers {
@@ -860,7 +864,7 @@ pub fn preview_frame(
             stills.contains(&layer.clip),
             chain,
         ) {
-            Ok(frame) => sources.push((frame, layer.opacity, layer.transform)),
+            Ok(frame) => sources.push((frame, layer.opacity, layer.transform, layer.crop)),
             Err(error) => failures.push(format!("{}: {error}", layer.media.display())),
         }
     }
@@ -879,8 +883,8 @@ pub fn preview_frame(
     // The exporter's own placement, by construction: same function.
     let layers: Vec<Layer<'_>> = sources
         .iter()
-        .map(|(frame, opacity, transform)| {
-            place_layer(frame.as_ref(), *opacity, transform, request.width, request.height)
+        .map(|(frame, opacity, transform, crop)| {
+            place_layer(frame.as_ref(), *opacity, transform, *crop, request.width, request.height)
         })
         .collect();
 
@@ -1243,4 +1247,21 @@ mod tests {
         assert_eq!(motion_from_id("", false), Motion::None);
     }
 
+
+    #[test]
+    fn the_placement_carries_the_crop_to_the_compositor() {
+        // The gap this pins is the one that shipped: the plan produced a
+        // crop, the compositor honoured one, and the single function
+        // between them - shared by the preview and the export both - never
+        // passed it on. Wipes rendered as hard cuts while every test either
+        // side of that seam kept passing.
+        let frame = Frame::black(4, 4);
+        let crop = Crop { right: 0.5, ..Crop::FULL };
+        let layer = place_layer(&frame, 1.0, &Transform::IDENTITY, crop, 4, 4);
+        assert_eq!(layer.crop, crop, "the crop has to survive the placement");
+
+        // And an untouched clip still paints the whole frame.
+        let plain = place_layer(&frame, 1.0, &Transform::IDENTITY, Crop::FULL, 4, 4);
+        assert!(plain.crop.is_full());
+    }
 }
