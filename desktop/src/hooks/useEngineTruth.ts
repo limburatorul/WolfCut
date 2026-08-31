@@ -4,12 +4,13 @@
  *
  * Paused: when the playhead settles, fetch the exporter's own composite and
  * hold it over the approximation until the playhead moves. Playing: while
- * two or more visual layers sit under the playhead, stream frames against
- * the transport clock - requests are
+ * the element cannot show what is on screen by itself - two or more visual
+ * layers, or a transition, whose overlap exists only inside the engine -
+ * stream frames against the transport clock - requests are
  * quantised to the project's frame grid and issued one measured round-trip
  * ahead of the interpolated playhead, so a frame lands about when it is
  * due; each presented frame also warms the engine's cache for the instants
- * after it (desktop decision 0009). Single layers keep the smooth element
+ * after it (desktop decision 0009). A lone clip keeps the smooth element
  * preview. Both paths fetch at the user's preview quality - a fraction of
  * the output frame, chosen in the monitor's footer.
  *
@@ -22,6 +23,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { clipsAt, type EditorProject } from "../lib/editor";
 import { previewFrame, previewPrefetch } from "../lib/engine";
+import { transitionCoversAt } from "../lib/monitor";
 
 export interface EngineStill {
   bytes: ArrayBuffer;
@@ -124,6 +126,12 @@ export function useEngineTruth({
       clipsAt(latest.current.project, time).filter(
         (clip) => clip.kind === "video" || clip.kind === "image",
       ).length;
+    // Two things the element cannot show on its own: a stack of clips, and a
+    // transition - whose second layer exists only inside the engine, so the
+    // count above reads one right through it. Missing that is what kept
+    // every moving transition off the screen during playback.
+    const engineOnly = (time: number) =>
+      visualLayers(time) >= 2 || transitionCoversAt(latest.current.project, time);
 
     const run = async () => {
       // The lead starts at one frame and follows the round-trip, clamped to
@@ -133,7 +141,7 @@ export function useEngineTruth({
       let presented = -1;
       while (live) {
         const now = latest.current.playhead;
-        if (!elementBlind && visualLayers(now) < 2) {
+        if (!elementBlind && !engineOnly(now)) {
           setEngineStill(null);
           presented = -1;
           await wait(120);

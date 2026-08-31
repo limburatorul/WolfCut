@@ -728,3 +728,16 @@ export const TRANSITIONS: TransitionDefinition[] = [
 export function findTransition(id: string): TransitionDefinition | null {
   return TRANSITIONS.find((transition) => transition.id === id) ?? null;
 }
+
+/**
+ * True when the engine lowers this transition into overlapping clips.
+ *
+ * Every kind but the fade-to-colour pair, which is a wash over a plain cut
+ * and needs no second layer. The monitor has to know, because an overlap is
+ * a layer that exists only inside the engine: the UI's own clip list still
+ * holds exactly one clip per instant across the cut.
+ */
+export function overlapsClips(id: string): boolean {
+  const definition = findTransition(id);
+  return definition !== null && id !== "fade-black" && id !== "fade-white";
+}

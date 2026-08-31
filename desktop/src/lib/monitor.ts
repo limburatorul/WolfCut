@@ -9,13 +9,16 @@
  */
 
 import {
+  activeTimeline,
   clipsAt,
   findMedia,
   findTrack,
   precedingClip,
+  type Clip,
   type EditorProject,
   type TimelineData,
 } from "./editor";
+import { overlapsClips } from "./effects";
 import type { TextStyle } from "./text";
 
 /** The clip the element preview shows: top-most visual clip at the playhead. */
@@ -127,26 +130,57 @@ export function previewGhostAt(
   playhead: number,
 ): PreviewGhost | null {
   for (const clip of timeline.clips) {
-    const transition = clip.transitionIn;
-    if (!transition || transition.id !== "cross-fade") continue;
-    if (clip.kind !== "video" && clip.kind !== "image") continue;
-    if (!precedingClip(project, clip.id)) continue;
-    const handle =
-      clip.kind === "image" ? Infinity : clip.sourceStart / Math.max(0.0625, clip.speed);
-    const d = Math.min(transition.duration, handle);
-    const cut = clip.start;
-    if (d <= 0 || playhead < cut - d || playhead >= cut) continue;
+    if (clip.transitionIn?.id !== "cross-fade") continue;
+    const window = overlapWindow(project, clip);
+    if (!window || playhead < window.cut - window.span || playhead >= window.cut) continue;
     const media = findMedia(project, clip.mediaId);
     if (!media) continue;
     return {
       clipId: clip.id,
       path: media.path,
-      time: Math.max(0, clip.sourceStart - (cut - playhead) * clip.speed),
+      time: Math.max(0, clip.sourceStart - (window.cut - playhead) * clip.speed),
       speed: clip.speed,
-      opacity: 1 - (cut - playhead) / d,
+      opacity: 1 - (window.cut - playhead) / window.span,
     };
   }
   return null;
+}
+
+/**
+ * The seconds before a clip's cut that its transition reaches back over, or
+ * null when there is nothing to overlap. The handle clamp mirrors the
+ * exporter's `resolve_transitions` exactly: no handle, shorter dissolve.
+ */
+function overlapWindow(
+  project: EditorProject,
+  clip: Clip,
+): { cut: number; span: number } | null {
+  const transition = clip.transitionIn;
+  if (!transition || !overlapsClips(transition.id)) return null;
+  if (clip.kind !== "video" && clip.kind !== "image") return null;
+  if (!precedingClip(project, clip.id)) return null;
+  const handle =
+    clip.kind === "image" ? Infinity : clip.sourceStart / Math.max(0.0625, clip.speed);
+  const span = Math.min(transition.duration, handle);
+  return span > 0 ? { cut: clip.start, span } : null;
+}
+
+/**
+ * True when the engine is compositing an overlap the UI's clip list does not
+ * contain.
+ *
+ * A transition is lowered engine-side into two clips on doubled lanes; the
+ * UI's own timeline still holds exactly one clip per instant across the cut.
+ * So counting visible clips to decide whether the element preview is good
+ * enough answers "one" all the way through every transition - which is how
+ * the moving ones came to be invisible during playback while the two the
+ * monitor draws itself looked perfectly fine.
+ */
+export function transitionCoversAt(project: EditorProject, time: number): boolean {
+  return activeTimeline(project).clips.some((clip) => {
+    const window = overlapWindow(project, clip);
+    return window !== null && time >= window.cut - window.span && time < window.cut;
+  });
 }
 
 /** A fade-to-colour wash over the playhead, if a cut's window covers it. */

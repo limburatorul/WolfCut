@@ -9,12 +9,13 @@
  */
 import { describe, expect, test } from "vitest";
 
-import type { Clip, EditorProject } from "./editor";
+import { clipsAt, type Clip, type EditorProject } from "./editor";
 import {
   previewGhostAt,
   previewSourceAt,
   previewVeilAt,
   textOverlaysAt,
+  transitionCoversAt,
 } from "./monitor";
 
 function clip(overrides: Partial<Clip> = {}): Clip {
@@ -178,5 +179,48 @@ describe("textOverlaysAt", () => {
     ]);
     const overlays = textOverlaysAt(p, timeline(p), 1);
     expect(overlays.map((overlay) => overlay.clipId)).toEqual(["t1", "t2"]);
+  });
+});
+
+describe("transitionCoversAt", () => {
+  const withTransition = (id: string) =>
+    project([
+      clip({ id: "out", duration: 4 }),
+      clip({ id: "in", start: 4, duration: 4, sourceStart: 2, transitionIn: { id, duration: 1 } }),
+    ]);
+
+  test("a moving transition is an overlap the UI's clip list does not hold", () => {
+    // One clip is under the playhead by the UI's own reckoning, which is why
+    // counting layers is not enough to decide the element preview will do.
+    const p = withTransition("wipe-left");
+    expect(clipsAt(p, 3.5)).toHaveLength(1);
+    expect(transitionCoversAt(p, 3.5)).toBe(true);
+    expect(transitionCoversAt(p, 3.9)).toBe(true);
+    expect(transitionCoversAt(p, 2.9)).toBe(false);
+    expect(transitionCoversAt(p, 4)).toBe(false);
+  });
+
+  test("a dissolve counts too - the engine composites it, not the monitor", () => {
+    expect(transitionCoversAt(withTransition("cross-fade"), 3.5)).toBe(true);
+  });
+
+  test("a fade to colour does not - it is a wash over a plain cut", () => {
+    expect(transitionCoversAt(withTransition("fade-black"), 3.5)).toBe(false);
+    expect(transitionCoversAt(withTransition("fade-white"), 3.5)).toBe(false);
+  });
+
+  test("the handle clamps the window, exactly as the ghost's does", () => {
+    const p = project([
+      clip({ id: "out", duration: 4 }),
+      clip({
+        id: "in",
+        start: 4,
+        duration: 4,
+        sourceStart: 0.25,
+        transitionIn: { id: "push", duration: 1 },
+      }),
+    ]);
+    expect(transitionCoversAt(p, 3.5)).toBe(false);
+    expect(transitionCoversAt(p, 3.9)).toBe(true);
   });
 });
