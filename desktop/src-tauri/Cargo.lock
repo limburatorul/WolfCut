@@ -5843,11 +5843,11 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wolfcut-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "wolfcut-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bzip2 0.6.1",
  "cpal",
@@ -5871,7 +5871,7 @@ dependencies = [
 
 [[package]]
 name = "wolfcut-export"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "wolfcut-core",
@@ -5882,7 +5882,7 @@ dependencies = [
 
 [[package]]
 name = "wolfcut-media"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "thiserror 2.0.20",
@@ -5891,7 +5891,7 @@ dependencies = [
 
 [[package]]
 name = "wolfcut-project"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5901,7 +5901,7 @@ dependencies = [
 
 [[package]]
 name = "wolfcut-render"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "pollster",
  "wgpu",

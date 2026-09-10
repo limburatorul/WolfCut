@@ -4,7 +4,19 @@ One entry per release, newest first. Plain lists of what changed for the
 person using the app; internal refactors appear only when they change
 behaviour.
 
-## Unreleased
+## 0.3.0 — 2026-09-10
+
+- Building a stand-in shows how far along it is. A proxy for a long
+  recording takes minutes, and nothing said so: the only sign it was
+  happening at all was a file growing in a folder nobody has open, which
+  reads exactly like nothing happening. A bar sits beside Export while any
+  are being built, and goes away when they are done.
+- Stand-ins build faster, and the ones you need build first. The machine
+  runs up to four at once rather than a flat two, and the window asks for
+  the clips on the timeline before the rest of the bin - so the clip under
+  the playhead is ready in minutes instead of behind an hour of footage
+  nobody has placed yet. Decoding is what a proxy costs; the encoder was
+  never the bottleneck, and hardware decoding is worth about a tenth.
 
 - The transitions that moved are no longer promises. Wipe, push and zoom
   work, and there are four more alongside them: wipe up, wipe down, push up
