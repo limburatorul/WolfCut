@@ -512,6 +512,7 @@
   "titleBar.maximise": "Maximise",
   "titleBar.minimise": "Minimise",
   "titleBar.openSettings": "Open settings",
+  "titleBar.proxies": "Building preview stand-ins: {done} of {total} done",
   "titleBar.restore": "Restore",
   "titleBar.switchDark": "Switch to dark",
   "titleBar.switchDarkAria": "Switch to dark theme",

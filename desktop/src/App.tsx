@@ -56,6 +56,7 @@ import {
   ensureProxy,
   onProxyProgress,
   proxyConfigure,
+  type ProxyProgress,
   newMediaFromSummary,
   probeMedia,
   readMediaBytes,
@@ -348,10 +349,16 @@ function Editor({
   // until the project is reopened.
   const [proxyRound, setProxyRound] = useState(0);
 
+  // What the title bar's bar draws. Null while the workers are idle, which
+  // is what hides it.
+  const [proxyWork, setProxyWork] = useState<ProxyProgress | null>(null);
+
   useEffect(() => {
     let stop: (() => void) | undefined;
     void onProxyProgress((progress) => {
-      if (progress.queued === 0 && progress.building === 0) {
+      const working = progress.queued + progress.building;
+      setProxyWork(working > 0 ? progress : null);
+      if (working === 0) {
         proxied.current.clear();
         setProxyRound((round) => round + 1);
       }
@@ -486,7 +493,7 @@ function Editor({
       if (proxyFolder && item.kind === "video" && item.height && !proxied.current.has(item.id)) {
         proxied.current.add(item.id);
         const mediaId = item.id;
-        void ensureProxy(item.path, proxyFolder, proxyHeight, item.height)
+        void ensureProxy(item.path, proxyFolder, proxyHeight, item.height, item.duration ?? 0)
           .then((answer) => {
             if (answer.path) {
               setProxyPaths((current) =>
@@ -1222,22 +1229,52 @@ function Editor({
     [project, selectedClipIds],
   );
 
-  // The Export button, built once so the memoised TitleBar sees the same
-  // `actions` element across playback renders.
-  const exportAction = useMemo(
-    () => (
-      <button
-        type="button"
-        onClick={openExport}
-        className="flex cursor-pointer items-center gap-1.5 rounded-md bg-accent px-2.5 py-1
-                   text-xs font-medium text-on-accent transition-colors hover:bg-accent-hover"
-      >
-        <Icon name="export" size={13} />
-        {t("common.export")}
-      </button>
-    ),
-    [openExport, t],
-  );
+  // The title bar's right-hand side: the proxy bar while stand-ins are being
+  // built, then Export. Rebuilt only when one of those changes, so the
+  // memoised TitleBar still sits out playback's renders.
+  //
+  // The bar is here rather than only in Settings because a transcode that
+  // takes minutes with no sign of it is indistinguishable from one that never
+  // started - which is exactly how it got read. Whole files plus the fraction
+  // of the ones in flight: a surveillance hour is one file, and a bar counting
+  // files would sit at zero for all of it.
+  const titleActions = useMemo(() => {
+    const total = proxyWork
+      ? proxyWork.built + proxyWork.failed + proxyWork.building + proxyWork.queued
+      : 0;
+    const done = proxyWork
+      ? proxyWork.built + proxyWork.failed + proxyWork.building * proxyWork.fraction
+      : 0;
+    const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+    return (
+      <>
+        {proxyWork && (
+          <div
+            className="mr-1 flex items-center gap-1.5 text-[11px] text-tertiary"
+            title={t("titleBar.proxies", { done: String(proxyWork.built), total: String(total) })}
+          >
+            <Icon name="film" size={12} />
+            <div className="h-1 w-16 overflow-hidden rounded-full bg-sunken">
+              <div
+                className="h-full bg-accent transition-[width] duration-200"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+            <span className="font-technical tabular-nums">{percent}%</span>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={openExport}
+          className="flex cursor-pointer items-center gap-1.5 rounded-md bg-accent px-2.5 py-1
+                     text-xs font-medium text-on-accent transition-colors hover:bg-accent-hover"
+        >
+          <Icon name="export" size={13} />
+          {t("common.export")}
+        </button>
+      </>
+    );
+  }, [proxyWork, openExport, t]);
 
   // The whole menu structure, rebuilt only when something a menu shows or
   // does actually changes. Building it inline in the JSX minted a new tree
@@ -1425,7 +1462,7 @@ function Editor({
         theme={theme}
         onToggleTheme={onToggleTheme}
         onOpenSettings={openSettings}
-        actions={exportAction}
+        actions={titleActions}
         menus={menus}
       />
 

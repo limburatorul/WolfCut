@@ -142,6 +142,8 @@ export interface ProxyProgress {
   building: number;
   built: number;
   failed: number;
+  /** Mean progress of the builds in flight, 0..1; zero when none are. */
+  fraction: number;
 }
 
 /**
@@ -156,16 +158,24 @@ export async function proxyConfigure(directory: string | null, height: number): 
  * Makes sure one file has a stand-in, building it in the background if not.
  *
  * Fire and forget, like artwork: the answer says what will happen, and the
- * preview picks the proxy up by itself once it lands. `sourceHeight` comes
- * from the probe the import already did.
+ * preview picks the proxy up by itself once it lands. `sourceHeight` and
+ * `duration` come from the probe the import already did - the duration is
+ * what lets the workers report a fraction rather than just "working".
  */
 export async function ensureProxy(
   path: string,
   directory: string,
   height: number,
   sourceHeight: number,
+  duration: number,
 ): Promise<ProxyAnswer> {
-  return invoke<ProxyAnswer>("ensure_proxy", { path, directory, height, sourceHeight });
+  return invoke<ProxyAnswer>("ensure_proxy", {
+    path,
+    directory,
+    height,
+    sourceHeight,
+    duration,
+  });
 }
 
 /** Bytes of proxies in a folder. Counts only files this app wrote. */

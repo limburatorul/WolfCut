@@ -20,6 +20,8 @@ use wolfcut_media::{proxy, ReaderPool};
 /// Source and proxy heights. The source has to be the taller of the two, or
 /// there would be nothing to substitute.
 const SOURCE_HEIGHT: u32 = 720;
+/// The fixture's length, which the progress callback has to reach.
+const FIXTURE_SECONDS: f64 = 6.0;
 const PROXY_HEIGHT: u32 = 360;
 /// What the monitor asks the pool for.
 const PREVIEW: (u32, u32) = (480, 270);
@@ -35,7 +37,7 @@ fn fixture(directory: &Path) -> PathBuf {
     let status = Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-y"])
         .args(["-f", "lavfi", "-i"])
-        .arg(format!("testsrc2=size=1280x{SOURCE_HEIGHT}:rate=30:duration=6"))
+        .arg(format!("testsrc2=size=1280x{SOURCE_HEIGHT}:rate=30:duration={FIXTURE_SECONDS}"))
         .args(["-c:v", "libx264", "-preset", "ultrafast", "-g", "60", "-pix_fmt", "yuv420p"])
         .arg(&path)
         .status()
@@ -76,8 +78,25 @@ fn a_substituted_proxy_shows_the_same_moment_as_the_original() {
 
     let store = directory.join("proxies");
     let destination = proxy::path_in(&store, &original, PROXY_HEIGHT);
-    proxy::generate(&original, &destination, PROXY_HEIGHT).expect("builds a proxy");
+    // The progress the UI draws its bar from. Collected here rather than in a
+    // unit test because the only thing worth proving is that FFmpeg really
+    // emits these lines and that they climb towards the source's duration -
+    // neither of which is observable without running the encode.
+    let mut reported: Vec<f64> = Vec::new();
+    proxy::generate(&original, &destination, PROXY_HEIGHT, |seconds| reported.push(seconds))
+        .expect("builds a proxy");
     assert!(destination.is_file(), "the finished proxy lands under its own name");
+
+    assert!(!reported.is_empty(), "the encode reported no progress at all");
+    assert!(
+        reported.windows(2).all(|pair| pair[1] >= pair[0]),
+        "progress went backwards: {reported:?}",
+    );
+    let last = reported.last().copied().unwrap_or(0.0);
+    assert!(
+        (FIXTURE_SECONDS - last).abs() < 0.5,
+        "progress stopped at {last}s of a {FIXTURE_SECONDS}s fixture",
+    );
     assert!(
         std::fs::metadata(&destination).unwrap().len()
             < std::fs::metadata(&original).unwrap().len(),

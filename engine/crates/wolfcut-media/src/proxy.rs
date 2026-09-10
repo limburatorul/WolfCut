@@ -21,12 +21,13 @@
 //! and the pool probes whichever file it opens, so a proxy has to keep the
 //! source's frame rate exactly: no `-r`, no frame dropping, only a scale.
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::binaries::ffmpeg;
 use crate::error::{Error, Result};
-use crate::process::{command, summarize};
+use crate::process::{command, StderrTail};
 
 /// The heights offered as settings.
 ///
@@ -75,13 +76,23 @@ pub fn path_in(directory: &Path, original: &Path, height: u32) -> PathBuf {
 /// `is_file()` would mistake for a finished proxy. That check is how the pool
 /// decides whether a proxy exists, and it has no way to tell a truncated file
 /// from a whole one.
-pub fn generate(original: &Path, destination: &Path, height: u32) -> Result<()> {
+///
+/// `on_progress` is called with the seconds of source encoded so far, as
+/// often as FFmpeg reports them. A surveillance hour takes minutes to
+/// transcode, and without this the only honest thing the UI could say about
+/// it was "working".
+pub fn generate(
+    original: &Path,
+    destination: &Path,
+    height: u32,
+    mut on_progress: impl FnMut(f64),
+) -> Result<()> {
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).map_err(|source| Error::Io { program: "ffmpeg", source })?;
     }
     let partial = destination.with_extension("partial");
 
-    let output = command(ffmpeg())
+    let mut child = command(ffmpeg())
         .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"])
         .arg("-i")
         .arg(original)
@@ -107,20 +118,35 @@ pub fn generate(original: &Path, destination: &Path, height: u32) -> Result<()> 
         // Named, not inferred. The file being written is a `.partial`, and
         // leaving the muxer to the extension made FFmpeg refuse it outright.
         .args(["-f", "mp4"])
+        // Machine-readable progress on stdout. stdout was already free here -
+        // the encode writes to a file, not a pipe.
+        .args(["-progress", "pipe:1"])
         .arg(&partial)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|source| Error::Spawn { program: "ffmpeg", source })?;
 
-    if !output.status.success() {
+    // Drained on a thread, as everywhere else: a full stderr pipe would stall
+    // the child, and this one runs for minutes.
+    let mut stderr = StderrTail::drain(&mut child);
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(std::result::Result::ok) {
+            if let Some(seconds) = encoded_seconds(&line) {
+                on_progress(seconds);
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|source| Error::Io { program: "ffmpeg", source })?;
+    if !status.success() {
         let _ = std::fs::remove_file(&partial);
         return Err(Error::Exited {
             program: "ffmpeg",
             path: original.to_path_buf(),
-            status: output.status,
-            stderr: summarize(&output.stderr),
+            status,
+            stderr: stderr.summary(),
         });
     }
 
@@ -130,9 +156,37 @@ pub fn generate(original: &Path, destination: &Path, height: u32) -> Result<()> 
     })
 }
 
+/// Seconds of source encoded, from one `-progress` line, or `None` for the
+/// lines that say something else.
+///
+/// `out_time` rather than `out_time_ms`: that field has reported
+/// *microseconds* for its whole life despite the name, so reading it means
+/// betting that FFmpeg never fixes its own bug. `out_time=HH:MM:SS.ffffff`
+/// says what it means. Before the first frame lands the value is `N/A`,
+/// which simply fails to parse - which is the right answer for it.
+fn encoded_seconds(line: &str) -> Option<f64> {
+    let mut parts = line.strip_prefix("out_time=")?.trim().split(':');
+    let hours: f64 = parts.next()?.parse().ok()?;
+    let minutes: f64 = parts.next()?.parse().ok()?;
+    let seconds: f64 = parts.next()?.parse().ok()?;
+    Some(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_lines_are_read_as_seconds() {
+        assert_eq!(encoded_seconds("out_time=00:00:12.500000"), Some(12.5));
+        assert_eq!(encoded_seconds("out_time=01:02:03.000000"), Some(3723.0));
+        // Emitted before the first frame; not a number, and not a zero either.
+        assert_eq!(encoded_seconds("out_time=N/A"), None);
+        // Every other field of the report, and the one that lies about units.
+        assert_eq!(encoded_seconds("out_time_ms=12500000"), None);
+        assert_eq!(encoded_seconds("frame=42"), None);
+        assert_eq!(encoded_seconds("progress=continue"), None);
+    }
 
     #[test]
     fn only_sources_taller_than_the_proxy_are_worth_building() {

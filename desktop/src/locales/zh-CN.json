@@ -512,6 +512,7 @@
   "titleBar.maximise": "最大化",
   "titleBar.minimise": "最小化",
   "titleBar.openSettings": "打开设置",
+  "titleBar.proxies": "正在生成预览替身：{total} 个中已完成 {done} 个",
   "titleBar.restore": "还原",
   "titleBar.switchDark": "切换到深色",
   "titleBar.switchDarkAria": "切换到深色主题",

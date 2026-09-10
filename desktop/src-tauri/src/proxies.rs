@@ -11,7 +11,7 @@
 //! original: the feature degrades to exactly the behaviour that existed
 //! before it.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -28,6 +28,9 @@ struct Job {
     source: PathBuf,
     destination: PathBuf,
     height: u32,
+    /// The source's length in seconds, from the probe the import already did.
+    /// What turns FFmpeg's "encoded 41 seconds" into a fraction of a bar.
+    duration: f64,
 }
 
 #[derive(Default)]
@@ -37,6 +40,11 @@ struct Pending {
     /// clip's proxy again, and without this each ask would be another encode
     /// of a file already being encoded.
     claimed: HashSet<PathBuf>,
+    /// How far each build in flight has got, in 0..=1. A surveillance hour
+    /// takes minutes to transcode, so a bar counting whole files would sit at
+    /// zero for all of it - which is not a progress bar, it is a spinner that
+    /// lies about being one.
+    active: HashMap<PathBuf, f64>,
     building: usize,
     built: usize,
     failed: usize,
@@ -56,6 +64,10 @@ struct Progress {
     building: usize,
     built: usize,
     failed: usize,
+    /// Mean progress of the builds in flight, in 0..=1; zero when none are.
+    /// A mean rather than one file's share because two workers run at once
+    /// and neither of them is "the" one.
+    fraction: f64,
 }
 
 pub struct ProxyState(Arc<Shared>);
@@ -83,6 +95,11 @@ fn grant(app: &tauri::AppHandle, path: &std::path::Path) {
 }
 
 fn announce(app: &tauri::AppHandle, pending: &Pending) {
+    let fraction = if pending.active.is_empty() {
+        0.0
+    } else {
+        pending.active.values().sum::<f64>() / pending.active.len() as f64
+    };
     let _ = app.emit(
         "proxies",
         Progress {
@@ -90,6 +107,7 @@ fn announce(app: &tauri::AppHandle, pending: &Pending) {
             building: pending.building,
             built: pending.built,
             failed: pending.failed,
+            fraction,
         },
     );
 }
@@ -132,14 +150,38 @@ fn run(shared: &Shared, app: &tauri::AppHandle) {
                 }
             };
             pending.building += 1;
+            pending.active.insert(job.source.clone(), 0.0);
             announce(app, &pending);
             job
         };
 
-        let outcome = wolfcut_media::proxy::generate(&job.source, &job.destination, job.height);
+        let source = job.source.clone();
+        let duration = job.duration;
+        let outcome = wolfcut_media::proxy::generate(
+            &job.source,
+            &job.destination,
+            job.height,
+            |seconds| {
+                if duration <= 0.0 {
+                    return;
+                }
+                let fraction = (seconds / duration).clamp(0.0, 1.0);
+                let mut pending = held(shared);
+                let Some(slot) = pending.active.get_mut(&source) else { return };
+                // Whole percents only. FFmpeg reports several times a second
+                // and every announcement crosses into the webview, where it
+                // re-renders a bar that cannot show more than a percent.
+                if (fraction * 100.0) as u32 == (*slot * 100.0) as u32 {
+                    return;
+                }
+                *slot = fraction;
+                announce(app, &pending);
+            },
+        );
 
         let mut pending = held(shared);
         pending.building -= 1;
+        pending.active.remove(&job.source);
         pending.claimed.remove(&job.source);
         match outcome {
             Ok(()) => {
@@ -214,6 +256,7 @@ pub fn ensure_proxy(
     directory: String,
     height: u32,
     source_height: u32,
+    duration: f64,
 ) -> ProxyAnswer {
     if !wolfcut_media::proxy::worth_proxying(source_height, height) {
         return ProxyAnswer { status: ProxyStatus::Skipped, path: None };
@@ -230,7 +273,7 @@ pub fn ensure_proxy(
 
     let mut pending = held(&state.0);
     if pending.claimed.insert(source.clone()) {
-        pending.queue.push_back(Job { source, destination, height });
+        pending.queue.push_back(Job { source, destination, height, duration });
         announce(&app, &pending);
         drop(pending);
         state.0.wake.notify_one();
