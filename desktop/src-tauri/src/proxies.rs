@@ -17,12 +17,26 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use tauri::Emitter;
 
-/// How many proxies build at once.
+/// How many proxies build at once, for this machine.
 ///
-/// Two: enough to use a modern machine, few enough to leave room for the
-/// preview being scrubbed right now - which is the thing this exists to make
-/// fast, and would be a poor trade to starve.
-const WORKERS: usize = 2;
+/// Two was the old fixed answer and it left most of a desktop idle. One job
+/// is not one core: FFmpeg's HEVC decoder already spreads over about eight
+/// threads, so the curve is far from linear. Measured on a 5900X against
+/// 2560x1440 HEVC, which is the shape that actually hurts:
+///
+/// | jobs | total |
+/// | 1 | 279 fps |
+/// | 2 | 375 fps |
+/// | 3 | 434 fps |
+/// | 4 | 486 fps |
+///
+/// Still climbing at four, and four is where it stops being worth the
+/// contention with the preview being scrubbed right now - which is the thing
+/// proxies exist to make fast and a poor trade to starve. A sixth of the
+/// threads, capped there.
+fn workers() -> usize {
+    std::thread::available_parallelism().map_or(2, |threads| (threads.get() / 6).clamp(1, 4))
+}
 
 struct Job {
     source: PathBuf,
@@ -117,7 +131,7 @@ impl ProxyState {
     /// it asleep on the condvar unless there is something to build.
     pub fn new(app: tauri::AppHandle) -> Self {
         let shared = Arc::new(Shared { pending: Mutex::new(Pending::default()), wake: Condvar::new() });
-        for worker in 0..WORKERS {
+        for worker in 0..workers() {
             let shared = Arc::clone(&shared);
             let app = app.clone();
             std::thread::Builder::new()

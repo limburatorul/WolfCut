@@ -184,6 +184,52 @@ assumed:
   Measure this from Rust, not from a shell. The same figures taken through Git
   Bash read ~25 ms high, and an earlier version of this section quoted them.
 
+**How long building one takes, and what that is spent on.** Measured against
+the case that provokes the question — six surveillance recordings, 2560×1440
+HEVC at 20 fps, 8.5 to 10.3 hours each, 49 hours in total:
+
+| what | rate |
+| --- | --- |
+| decode only, software | 333 fps |
+| decode only, `-hwaccel d3d11va` | 367 fps |
+| decode + scale to 540p | 320 fps |
+| the whole transcode, libx264 veryfast | 285 fps |
+| the whole transcode, `h264_amf` | 286 fps |
+
+Decoding is **85% of it**, and everything else is rounding. That is why the
+encoder choice does not matter here — swapping libx264 for the AMD hardware
+encoder moved nothing, because the encoder was never the wall — and why
+`-skip_loop_filter all`, which does make HEVC decoding cheaper, also bought
+nothing worth the artefacts. Hardware decoding is worth about a tenth: a
+decode on the GPU still copies every frame back to system memory for the
+scaler, and that copy eats most of what it saved. Keeping the frame on the
+GPU end to end would avoid the copy, but `scale_d3d11` refuses to configure
+against these streams, so that route is not currently open.
+
+The disk is not the limit either: 196 MB/s read, against a demand of about
+28 KB/s.
+
+**So the lever is jobs, not settings.** One job is not one core — the HEVC
+decoder already spreads over about eight threads — so the curve is far from
+linear:
+
+| jobs | total |
+| --- | --- |
+| 1 | 279 fps |
+| 2 | 375 fps |
+| 3 | 434 fps |
+| 4 | 486 fps |
+
+`proxies::workers()` takes a sixth of the machine's threads, capped at four:
+still climbing there, and past it the contention starts costing the preview
+being scrubbed, which is what proxies exist to make fast.
+
+None of this makes 49 hours of 1440p HEVC quick. It has to be decoded once,
+and that is hours of work whoever does it. What makes the wait *bearable* is
+ordering: the window asks for the media on the timeline first (App.tsx), so
+the clip under the playhead is ready in minutes instead of behind everything
+else in the bin.
+
 **Why this is safe:** the pool is the preview path and only the preview path —
 the exporter opens its own `FfmpegDecoder`s on the originals (`export/lib.rs`)
 — so a proxy has no route into a finished file. That is structural, not a rule

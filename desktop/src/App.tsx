@@ -482,7 +482,16 @@ function Editor({
     );
     const proxyFolder = getProxyEnabled() ? getProxyDirectory() : null;
     const proxyHeight = getProxyHeight();
-    for (const item of project.media) {
+    // Whatever is actually on the timeline first. The workers take jobs in
+    // the order they are asked for, and a bin holding hours of footage would
+    // otherwise spend that hour on files the user has not put anywhere -
+    // while the clip under the playhead, the one they are trying to scrub,
+    // waits its turn behind all of them.
+    const onTimeline = new Set(timeline.clips.map((clip) => clip.mediaId));
+    const byUse = [...project.media].sort(
+      (left, right) => Number(onTimeline.has(right.id)) - Number(onTimeline.has(left.id)),
+    );
+    for (const item of byUse) {
       requestAssets(assets.current, item, session.path);
       if (item.kind === "video" && wantsPeaks.has(item.id)) {
         requestVideoPeaks(assets.current, item, session.path);

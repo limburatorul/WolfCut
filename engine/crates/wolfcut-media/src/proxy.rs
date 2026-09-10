@@ -94,6 +94,14 @@ pub fn generate(
 
     let mut child = command(ffmpeg())
         .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"])
+        // Decoding is the whole cost of a proxy - 18 of the 21 seconds it
+        // took to transcode five minutes of 1440p HEVC - so this is the only
+        // place worth accelerating. It buys about a tenth, not the multiple
+        // one might hope for: a hardware decode still copies every frame back
+        // to system memory for the scaler, and that copy eats most of what
+        // the decode saved. `auto` falls back to software on its own, which
+        // is what makes it safe to ask for unconditionally.
+        .args(["-hwaccel", "auto"])
         .arg("-i")
         .arg(original)
         // Video only. Sound is never served from here - playback decodes the
