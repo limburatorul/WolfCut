@@ -348,7 +348,7 @@ jobs:
           body: |
             WolfCut is MPL-2.0. The installers bundle GPL-built FFmpeg binaries,
             invoked as separate programs — sources and licenses in
-            [THIRD_PARTY_NOTICES.md](https://github.com/jub0t/WolfCut/blob/main/THIRD_PARTY_NOTICES.md).
+            [THIRD_PARTY_NOTICES.md](https://github.com/limburatorul/WolfCut/blob/main/THIRD_PARTY_NOTICES.md).
           fail_on_unmatched_files: true
           files: |
             bundles/**/*.dmg

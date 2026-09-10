@@ -21,6 +21,10 @@ pnpm-debug.log*
 # Tauri build output
 desktop/src-tauri/gen/
 desktop/src-tauri/target/
+# A built binary copied next to the sources to test it. One got committed
+# this way - 36 MB, swept in by a broad `git add`. Ignored rather than
+# remembered.
+*.exe
 
 # Python (tooling and one-off scripts live at the repo root for now)
 __pycache__/
